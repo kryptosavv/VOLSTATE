@@ -1,0 +1,41 @@
+name: VOLSTATE Data Engine (Hourly)
+
+on:
+  schedule:
+    # Runs at minute 45 of hours 3 through 11 UTC (Mon-Fri)
+    # This covers 09:15 AM IST to 05:15 PM IST exactly.
+    - cron: '45 3-11 * * 1-5'
+
+  workflow_dispatch: # Allows manual run button
+
+jobs:
+  scrape-market-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # REQUIRED to save data back to repo
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Libraries
+        run: |
+          pip install selenium pandas numpy webdriver-manager
+
+      - name: Run Engine
+        # Matches your specific filename
+        run: python VOLSTATE_data_engine.py
+
+      - name: Save Database
+        run: |
+          git config --global user.name "MarketBot"
+          git config --global user.email "bot@github.com"
+          git add market_data.db
+          # Only commit if data actually changed
+          git diff-index --quiet HEAD || git commit -m "📊 Data Update: $(date +'%Y-%m-%d %H:%M')"
+          git push
