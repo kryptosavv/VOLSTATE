@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
 
 # --- CONFIG ---
 DB_NAME = "market_data.db"
@@ -30,7 +31,7 @@ STRATEGY_MATRIX = {
 }
 
 st.set_page_config(
-    page_title="Market Truth Control Center", 
+    page_title="VOLSTATE Dashboard", 
     layout="wide", 
     page_icon="⚡",
     initial_sidebar_state="collapsed"
@@ -66,11 +67,13 @@ st.markdown("""
     .border-red { border-left: 4px solid #dc3545; }
     .mini-diag { font-family: monospace; font-size: 12px; color: #666; border-top: 1px solid #333; margin-top: 20px; padding-top: 10px; display: flex; justify-content: space-around; }
     .section-header { margin-top: 40px; margin-bottom: 15px; padding-bottom: 5px; border-bottom: 1px solid #333; font-size: 20px; font-weight: bold; color: #ddd;}
+    /* Hide Streamlit Date Input Label if desired, or style it */
+    .stDateInput label { display: none; }
     </style>
 """, unsafe_allow_html=True)
 
 # --- DATA LOADERS ---
-def load_data(limit=100):
+def load_data(limit=300): # Increased limit to allow scrolling back in history
     conn = sqlite3.connect(DB_NAME)
     query = f"""
         SELECT * FROM market_logs 
@@ -87,13 +90,10 @@ def load_data(limit=100):
     if not df.empty:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         
-        # ADDED skew_index and vvix to ensure numeric type from DB
         cols_to_numeric = ['m1_iv', 'm3_iv', 'm1_straddle', 'spot_price', 'm2_iv', 'skew_index', 'vvix']
         for c in cols_to_numeric:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
-        
-        # [CLEANUP] Removed Random Simulation Code here
             
     return df
 
@@ -291,32 +291,55 @@ def calculate_historical_regime(df):
 
 # --- MAIN APP ---
 def main():
-    df = load_data(100)
+    # Load more data to ensure we have history for scrolling
+    df_all = load_data(300) 
     
-    if len(df) < 5:
+    if len(df_all) < 5:
         st.error("⚠️ Not enough data found. Need at least 5 days of history.")
         st.stop()
 
-    signals, ctx, curr = run_engine_live(df)
+    # --- TOP HEADER ---
+    c_head1, c_head2, c_head3 = st.columns([1, 2, 1])
     
-    c_top1, c_top2 = st.columns([3, 1])
-    with c_top1:
-        st.markdown(f"### {curr['timestamp'].strftime('%d %b %Y')} | {curr['timestamp'].strftime('%H:%M')} IST")
-    with c_top2:
-        if st.button("🔄 Refresh"): st.rerun()
+    # 1. Date Picker Logic
+    max_date = df_all['timestamp'].max().date()
+    min_date = df_all['timestamp'].min().date()
 
-    st.markdown('<div class="pill-container">', unsafe_allow_html=True)
-    c_p1, c_p2, c_p3, c_p4 = st.columns(4)
-    with c_p1:
-        if ctx['is_roll']: st.markdown('<span class="pill pill-yellow">🟡 ROLLOVER WINDOW</span>', unsafe_allow_html=True)
-        else: st.markdown('<span class="pill pill-gray">ROLLOVER WINDOW</span>', unsafe_allow_html=True)
-    with c_p2:
-        if ctx['is_event']: st.markdown('<span class="pill pill-red">🔴 EVENT RISK</span>', unsafe_allow_html=True)
-        else: st.markdown('<span class="pill pill-gray">EVENT RISK</span>', unsafe_allow_html=True)
-    with c_p3:
-        if ctx['is_late']: st.markdown('<span class="pill pill-orange">🟠 LATE CYCLE</span>', unsafe_allow_html=True)
-        else: st.markdown('<span class="pill pill-gray">LATE CYCLE</span>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    with c_head1:
+        st.markdown(f"**{df_all.iloc[0]['timestamp'].strftime('%d %b %Y | %H:%M')} IST**")
+        # Go to particular day option
+        selected_date = st.date_input("Go to Date:", value=max_date, min_value=min_date, max_value=max_date)
+
+    # Filter Data for Engine based on Selected Date
+    # We slice the DF to pretend 'selected_date' is the last available day
+    df_selected = df_all[df_all['timestamp'].dt.date <= selected_date]
+    
+    if df_selected.empty:
+        st.error("No data available for selected date.")
+        st.stop()
+
+    # Run engine on the filtered slice
+    signals, ctx, curr = run_engine_live(df_selected)
+
+    with c_head2:
+        # UPDATED: Added Emoji ⚡
+        st.markdown("""
+            <h1 style='text-align: center; margin: 0; padding: 0; color: #ffc107; 
+            font-size: 42px; font-weight: 900; text-transform: uppercase; 
+            letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'>
+            ⚡ VOLSTATE DASHBOARD</h1>
+            """, unsafe_allow_html=True)
+        
+    with c_head3:
+        st.markdown('<div style="text-align: right;">', unsafe_allow_html=True)
+        if ctx['is_roll']: 
+            st.markdown('<span class="pill pill-yellow">🟡 ROLLOVER WINDOW</span>', unsafe_allow_html=True)
+        elif ctx['is_late']: 
+            st.markdown('<span class="pill pill-orange">🟠 LATE CYCLE</span>', unsafe_allow_html=True)
+        else:
+             st.markdown('<span class="pill pill-gray">MID CYCLE</span>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown("<br>", unsafe_allow_html=True)
 
     st.markdown(f"""
@@ -385,21 +408,33 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown('<div class="section-header">📊 Market Truth Analytics</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">📊 VOLSTATE Analytics</div>', unsafe_allow_html=True)
     
-    df_regime = calculate_historical_regime(df)
+    # --- CHART LOGIC (FILTERED TO MAX 2 MONTHS / 60 ROWS) ---
+    # We use df_selected which ends at the selected date
+    df_chart = df_selected.sort_values('timestamp', ascending=True).tail(60).copy()
+
+    df_regime = calculate_historical_regime(df_chart)
     if not df_regime.empty:
-        fig_regime = px.bar(df_regime, x="timestamp", y="val", color="regime", 
+        # --- CHANGED TO SCATTER SQUARES ---
+        df_regime['y_val'] = 1 # Dummy Y-axis to align squares
+        fig_regime = px.scatter(df_regime, x="timestamp", y="y_val", color="regime", 
                             color_discrete_map={
                                 "COMPRESSION": "#28a745", "TRANSITION": "#ffc107", 
                                 "EXPANSION": "#fd7e14", "STRESS": "#dc3545"
                             },
-                            title="<b>Historical Regime Timeline</b>")
-        fig_regime.update_layout(template="plotly_dark", height=120, showlegend=True, 
-                                 yaxis=dict(visible=False), xaxis_title=None, margin=dict(t=30, b=10))
+                            symbol_sequence=['square'], # Force square shape
+                            title="<b>Historical Regime Timeline (Last 60 Days)</b>")
+        
+        fig_regime.update_traces(marker=dict(size=15)) # Make squares big
+        # Hide Y-axis and Legend
+        fig_regime.update_layout(template="plotly_dark", height=130, showlegend=False, 
+                                 yaxis=dict(visible=False, showgrid=False), 
+                                 xaxis=dict(showgrid=False),
+                                 xaxis_title=None, margin=dict(t=30, b=10))
         st.plotly_chart(fig_regime, use_container_width=True)
 
-    df_hist = df.sort_values('timestamp', ascending=True).copy()
+    df_hist = df_chart.copy()
     df_hist['slope'] = df_hist['m3_iv'] - df_hist['m1_iv']
     df_hist['slope_col'] = np.where(df_hist['slope'] >= 0, '#00cc00', '#ff0000')
     df_hist['std_pct'] = df_hist['m1_straddle'].pct_change() * 100
@@ -423,39 +458,79 @@ def main():
     col_r1_1, col_r1_2 = st.columns(2)
     with col_r1_1:
         fig_slope = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['slope'], marker_color=df_hist['slope_col']))
-        fig_slope.update_layout(title="<b>Term Structure Slope</b><br><span style='font-size:10px; color:gray'>Green=Contango (Safe), Red=Inverted (Panic)</span>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_slope.update_layout(title="<b>Term Structure Slope</b><br><span style='font-size:10px; color:gray'>Green=Contango (Safe), Red=Inverted (Panic)</span>", 
+                                template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False, 
+                                bargap=0.1)
         st.plotly_chart(fig_slope, use_container_width=True)
 
     with col_r1_2:
         fig_std = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['std_pct'], marker_color=df_hist['std_col']))
-        fig_std.update_layout(title="<b>Daily Straddle Change %</b><br><span style='font-size:10px; color:gray'>Green=Decay (Profit), Red=Expansion (Loss)</span>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_std.update_layout(title="<b>Daily Straddle Change %</b><br><span style='font-size:10px; color:gray'>Green=Decay (Profit), Red=Expansion (Loss)</span>", 
+                              template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False,
+                              bargap=0.1)
         st.plotly_chart(fig_std, use_container_width=True)
 
     col_r2_1, col_r2_2 = st.columns(2)
     with col_r2_1:
         fig_vrp = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['vrp'], marker_color=df_hist['vrp_col']))
-        fig_vrp.update_layout(title="<b>VRP Index (IV - RV) [Edge]</b><br><span style='font-size:10px; color:gray'>Red = Negative Edge (No Trade Zone)</span>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_vrp.update_layout(title="<b>VRP Index (IV - RV) [Edge]</b><br><span style='font-size:10px; color:gray'>Red = Negative Edge (No Trade Zone)</span>", 
+                              template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False,
+                              bargap=0.1)
         st.plotly_chart(fig_vrp, use_container_width=True)
         
     with col_r2_2:
         fig_skew = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['skew_index'], mode='lines', line=dict(color='#3498db', width=2), fill='tozeroy'))
-        fig_skew.update_layout(title="<b>Skew Index</b><br><span style='font-size:10px; color:gray'>Rising = Hedging Demand (Warning)</span>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_skew.update_layout(title="<b>Skew Index</b><br><span style='font-size:10px; color:gray'>Rising = Hedging Demand (Warning)</span>", 
+                               template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_skew, use_container_width=True)
 
-    # --- FIXED VIX CHART ---
     col_r3_1, col_r3_2 = st.columns(2)
     with col_r3_1:
         fig_vvix = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['vvix'], mode='lines', line=dict(color='#f1c40f', width=2)))
-        # Corrected Label
-        fig_vvix.update_layout(title="<b>INDIA VIX</b><br><span style='font-size:10px; color:gray'>Market Fear Gauge</span>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_vvix.update_layout(title="<b>INDIA VIX</b><br><span style='font-size:10px; color:gray'>Market Fear Gauge</span>", 
+                               template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_vvix, use_container_width=True)
         
     with col_r3_2:
         fig_sd = go.Figure()
         fig_sd.add_trace(go.Scatter(x=df_hist['timestamp'], y=df_hist['sd_move'], fill='tozeroy', mode='lines', line=dict(color='#9b59b6')))
         fig_sd.add_hline(y=1.0, line_dash="dash", line_color="red")
-        fig_sd.update_layout(title="<b>Price Displacement (SD)</b><br><span style='font-size:10px; color:gray'>Spikes > 1.0 indicate Dislocation</span>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_sd.update_layout(title="<b>Price Displacement (SD)</b><br><span style='font-size:10px; color:gray'>Spikes > 1.0 indicate Dislocation</span>", 
+                             template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_sd, use_container_width=True)
+
+    # --- RAW DATA SECTION ---
+    st.markdown("<br><hr>", unsafe_allow_html=True)
+    # Label identifying the start date
+    start_date_label = df_all['timestamp'].min().strftime('%d %b %Y')
+    with st.expander(f"📂 View Raw Database (Data from {start_date_label})"):
+        st.dataframe(df_all.style.format("{:.2f}", subset=['spot_price', 'm1_straddle', 'm1_iv', 'm2_iv', 'm3_iv', 'skew_index', 'vvix']))
+
+    # --- USER GUIDE SECTION ---
+    with st.expander("📚 How to Read This Dashboard (User Guide)"):
+        st.markdown("""
+        ### **1. The Workflow**
+        1.  **Check the Regime Label:** Top center. Is it Green (Safe), Yellow (Caution), or Red (Danger)?
+        2.  **Check Confidence:** High confidence means 0-1 signals (Compression) or 3+ signals (Expansion). Low confidence means the market is confused.
+        3.  **Inspect the Grid:** Which specific tiles are lit up? (e.g., if only 'Skew' is lit, big players are hedging).
+        4.  **Select Strategy:** Look at the "Suggested Strategies" box for trades that match the current math.
+
+        ### **2. The 6 Logic Gates (Inputs & Meaning)**
+        | Signal | Name | Logic | Interpretation |
+        | :--- | :--- | :--- | :--- |
+        | **T1** | **ATM IV Rising** | IV Rising 2 days in a row? | **Vol Awakening.** Options are getting more expensive. |
+        | **T2** | **Straddle Stalled** | Straddle Price drop < 0.2%? | **Theta Failure.** Premium is NOT decaying. Buying pressure > Time decay. |
+        | **T3** | **Back Month Bid** | Far Month IV > Near Month IV? | **Future Fear.** Traders expect volatility to persist. |
+        | **T4** | **Term Structure** | Near IV > Far IV? (Inversion) | **Panic.** Immediate demand for protection is extreme. |
+        | **T5** | **Tail Risk** | Skew Index Rising? | **Crash Hedge.** Puts are becoming expensive relative to Calls. |
+        | **T6** | **Disconnect** | Spot UP + IV UP? | **Instability.** Rally is fueled by fear/FOMO, not stability. |
+
+        ### **3. The Regimes (Results)**
+        * **COMPRESSION (Green):** Market is asleep. **Strategy:** Harvest Theta (Iron Condors, Short Straddles).
+        * **TRANSITION (Yellow):** Waking up. **Strategy:** Reduce size, move to Defined Risk (Spreads).
+        * **EXPANSION (Orange):** Trending/Exploding. **Strategy:** Long Volatility (Debit Spreads), Trend Following.
+        * **STRESS (Red):** Panic/Crash. **Strategy:** Cash or Hedges only. Do not sell premium.
+        """)
 
 if __name__ == "__main__":
     main()
