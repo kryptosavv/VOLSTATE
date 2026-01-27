@@ -1,10 +1,18 @@
-name: VOLSTATE Data Engine (Hourly)
+name: VOLSTATE Data Engine (Test Mode)
 
 on:
+  # 1. Runs every 5 minutes (for testing)
   schedule:
-    - cron: '*/5 * * * *'  # Runs every 5 minutes (Test only)
-  workflow_dispatch:
+    - cron: '*/5 * * * *'
   
+  # 2. Runs IMMEDIATELY when you push this file (Forces it to start)
+  push:
+    branches:
+      - main
+      
+  # 3. Allows manual button click
+  workflow_dispatch:
+
 jobs:
   scrape-market-data:
     runs-on: ubuntu-latest
@@ -21,11 +29,11 @@ jobs:
           python-version: '3.10'
 
       - name: Install Libraries
+        # We explicitly list libraries here to ensure it runs even without requirements.txt
         run: |
           pip install selenium pandas numpy webdriver-manager
 
       - name: Run Engine
-        # Matches your specific filename
         run: python VOLSTATE_data_engine.py
 
       - name: Save Database
@@ -33,6 +41,6 @@ jobs:
           git config --global user.name "MarketBot"
           git config --global user.email "bot@github.com"
           git add market_data.db
-          # Only commit if data actually changed
+          # The part below prevents errors if no data changed
           git diff-index --quiet HEAD || git commit -m "📊 Data Update: $(date +'%Y-%m-%d %H:%M')"
           git push
