@@ -2,12 +2,9 @@ name: VOLSTATE Data Engine (Hourly)
 
 on:
   schedule:
-    # Runs at minute 45 of hours 3 through 11 UTC (Mon-Fri)
-    # This covers 09:15 AM IST to 05:15 PM IST exactly.
-    - cron: '45 3-11 * * 1-5'
-
-  workflow_dispatch: # Allows manual run button
-
+    - cron: '*/5 * * * *'  # Runs every 5 minutes (Test only)
+  workflow_dispatch:
+  
 jobs:
   scrape-market-data:
     runs-on: ubuntu-latest
