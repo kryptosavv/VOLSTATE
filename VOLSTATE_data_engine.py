@@ -6,6 +6,7 @@ import re
 import io
 import json
 import logging
+import random # Added for User-Agent rotation
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 from contextlib import contextmanager
@@ -291,6 +292,7 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
 def get_live_data_diagnostics() -> Optional[Dict]:
     if is_weekend(): return None
 
+    # --- STEALTH MODE CONFIGURATION ---
     options = Options()
     options.add_argument("--headless=new") 
     options.add_argument("--disable-gpu") 
@@ -298,32 +300,48 @@ def get_live_data_diagnostics() -> Optional[Dict]:
     options.add_argument("--disable-dev-shm-usage") 
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--ignore-certificate-errors")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # --- STEALTH MODE ENABLED ---
+    # 1. Random User Agent
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ]
+    chosen_ua = random.choice(user_agents)
+    options.add_argument(f"user-agent={chosen_ua}")
+    
+    # 2. Disable Automation Flags
     options.add_argument("--disable-blink-features=AutomationControlled") 
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     
     logger.info("🚀 Launching Headless Browser (Stealth Mode)...")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    
+    # 3. CDP Command Overrides (The Magic Fix)
+    driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": chosen_ua})
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
     final_record = {}
 
     try:
         logger.info("   -> Initializing Session...")
         driver.get(HOME_URL)
-        time.sleep(3)
+        time.sleep(5) # Increased sleep to let anti-bot checks pass
 
         if check_live_holiday(driver):
             return None
 
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
-        time.sleep(8) 
+        time.sleep(10) # Increased sleep for table load
         
+        # Take screenshot if debugging needed
+        # driver.save_screenshot("debug_page.png") 
+
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
-            logger.error("❌ Expiry Dropdown not found.")
+            logger.error("❌ Expiry Dropdown not found. (Blocked or Changed Layout)")
             return None
 
         expiries = get_monthly_expiries(driver, dropdown)
