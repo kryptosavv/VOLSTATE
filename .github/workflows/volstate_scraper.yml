@@ -25,10 +25,12 @@ jobs:
           python-version: '3.10'
 
       - name: Install Libraries
+        # UPDATED: Added 'lxml' here to fix the "Missing optional dependency" error
         run: |
-          pip install selenium pandas numpy webdriver-manager
+          pip install selenium pandas numpy webdriver-manager lxml
 
       - name: Run Engine
+        # Matches your specific filename
         run: python VOLSTATE_data_engine.py
 
       - name: Save Database
