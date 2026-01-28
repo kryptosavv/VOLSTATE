@@ -216,6 +216,15 @@ def switch_expiry(driver: webdriver.Chrome, dropdown_element, value_to_select: s
 
 def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
     try:
+        # --- NEW: FORCE WAIT FOR OPTION TABLE ---
+        # This ensures the table ID exists in DOM before we try to read it
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "optionChainTable-indices"))
+            )
+        except:
+            logger.warning("⚠️ Timeout waiting for optionChainTable-indices (proceeding with page_source)")
+
         page_source = driver.page_source
         match_spot = re.search(r'NIFTY\s+([0-9,]+\.\d{2})', page_source)
         if not match_spot: 
@@ -349,18 +358,15 @@ def get_live_data_diagnostics() -> Optional[Dict]:
     try:
         logger.info("   -> Initializing Session...")
         driver.get(HOME_URL)
-        time.sleep(5) # Increased sleep to let anti-bot checks pass
+        time.sleep(5) 
 
         if check_live_holiday(driver):
             return None
 
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
-        time.sleep(10) # Increased sleep for table load
+        time.sleep(10) 
         
-        # Take screenshot if debugging needed
-        # driver.save_screenshot("debug_page.png") 
-
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
             logger.error("❌ Expiry Dropdown not found. (Blocked or Changed Layout)")
@@ -450,8 +456,6 @@ def update_market_data():
     
     logger.info(f"✅ DATA SAVED for {today_date}!")
     logger.info(f"   Spot: {live_data['spot_price']} | M1 IV: {live_data['m1_iv']:.2f}% | VIX: {live_data['india_vix']}")
-    
-    # 
 
 if __name__ == "__main__":
     init_db()
