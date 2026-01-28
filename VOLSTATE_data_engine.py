@@ -251,32 +251,54 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
 
         chain_df = chain_df[pd.to_numeric(chain_df[strike_col], errors='coerce').notnull()].copy()
         chain_df[strike_col] = chain_df[strike_col].astype(float)
-        chain_df = chain_df.sort_values(strike_col).reset_index(drop=True)
         
+        # --- MODIFIED: SMART ATM FINDING ---
         chain_df['diff'] = abs(chain_df[strike_col] - spot_price)
-        atm_idx = chain_df['diff'].idxmin()
-        atm_row = chain_df.loc[atm_idx]
-        atm_strike = atm_row[strike_col]
+        # Sort by proximity to spot. Index 0 is now Strict ATM.
+        chain_df = chain_df.sort_values('diff').reset_index(drop=True)
+        
+        atm_row = chain_df.iloc[0]
+        atm_strike = atm_row[strike_col] # Keep strict ATM strike
 
         def safe_float(val):
             try: return float(val) if val != '-' else 0.0
             except: return 0.0
 
-        call_iv = safe_float(atm_row[iv_cols[0]])
-        put_iv = safe_float(atm_row[iv_cols[1]])
-        avg_iv = (call_iv + put_iv) / 2 if (call_iv and put_iv) else (call_iv or put_iv)
+        # 1. STRADDLE (Strict ATM)
         straddle_price = safe_float(atm_row[ltp_cols[0]]) + safe_float(atm_row[ltp_cols[1]])
 
+        # 2. IV (Smart Search - Scan up to 5 nearest neighbors)
+        avg_iv = 0.0
+        for i in range(min(5, len(chain_df))):
+            row = chain_df.iloc[i]
+            call_iv = safe_float(row[iv_cols[0]])
+            put_iv = safe_float(row[iv_cols[1]])
+            
+            # If valid IV found, use it and break
+            if call_iv > 0 and put_iv > 0:
+                avg_iv = (call_iv + put_iv) / 2
+                break
+            elif call_iv > 0:
+                avg_iv = call_iv
+                break
+            elif put_iv > 0:
+                avg_iv = put_iv
+                break
+            # If 0, loop continues to next nearest neighbor
+
+        # 3. SKEW (Needs sorted by strike again)
         skew_index = 0.0
         try:
-            unique_strikes = sorted(chain_df[strike_col].unique())
+            # Re-sort by strike to find OTMs correctly
+            chain_df_sorted = chain_df.sort_values(strike_col).reset_index(drop=True)
+            unique_strikes = sorted(chain_df_sorted[strike_col].unique())
             if len(unique_strikes) > 1:
                 step = unique_strikes[1] - unique_strikes[0]
                 target_put = atm_strike - (step * 5)
                 target_call = atm_strike + (step * 5)
                 
-                put_row = chain_df.iloc[(chain_df[strike_col] - target_put).abs().argsort()[:1]]
-                call_row = chain_df.iloc[(chain_df[strike_col] - target_call).abs().argsort()[:1]]
+                put_row = chain_df_sorted.iloc[(chain_df_sorted[strike_col] - target_put).abs().argsort()[:1]]
+                call_row = chain_df_sorted.iloc[(chain_df_sorted[strike_col] - target_call).abs().argsort()[:1]]
                 
                 if not put_row.empty and not call_row.empty:
                     p_iv = safe_float(put_row[iv_cols[1]].values[0])
@@ -391,6 +413,16 @@ def update_market_data():
     if live_data.get('spot_price', 0) == 0:
         logger.error("❌ Scrape Failed: Spot Price is 0.")
         return
+
+    # --- MODIFIED: FAILSAFE FOR DEAD M3 IV ---
+    # If M3 IV is missing (0), copy M2 IV to prevent "Inverted Curve" panic
+    if live_data.get('m3_iv', 0) == 0:
+        if live_data.get('m2_iv', 0) > 0:
+            logger.warning("⚠️ M3 IV is 0. Using M2 IV as fallback (Flat Curve Failsafe).")
+            live_data['m3_iv'] = live_data['m2_iv']
+        elif live_data.get('m1_iv', 0) > 0:
+            logger.warning("⚠️ M3 & M2 IV are 0. Using M1 IV as fallback.")
+            live_data['m3_iv'] = live_data['m1_iv']
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
