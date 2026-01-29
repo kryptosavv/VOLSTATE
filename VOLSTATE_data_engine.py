@@ -59,13 +59,11 @@ def init_db():
     with get_db_connection() as conn:
         c = conn.cursor()
         
-        # 1. DROP OLD TABLES (To apply new schema)
-        c.execute("DROP TABLE IF EXISTS market_logs")
-        c.execute("DROP TABLE IF EXISTS market_logs_backup")
+        # --- FIX: REMOVED "DROP TABLE" COMMANDS ---
+        # Kept strictly to "CREATE IF NOT EXISTS" so history is preserved.
         
-        # 2. CREATE NEW SIMPLIFIED TABLE
         c.execute('''
-            CREATE TABLE market_logs (
+            CREATE TABLE IF NOT EXISTS market_logs (
                 timestamp DATETIME PRIMARY KEY,
                 spot_price REAL NOT NULL,
                 m1_straddle REAL,
@@ -77,7 +75,7 @@ def init_db():
                 india_vix REAL
             )
         ''')
-    logger.info(f"✅ Database {DB_NAME} ready with new schema.")
+    logger.info(f"✅ Database {DB_NAME} checked/ready.")
 
 def validate_spot_price(price: float) -> bool:
     if not isinstance(price, (int, float)): return False
@@ -115,17 +113,14 @@ def check_live_holiday(driver: webdriver.Chrome) -> bool:
 # --- NEW API-BASED VIX LOGIC ---
 def get_india_vix_nse(driver: webdriver.Chrome) -> float:
     # METHOD 1: Direct API (Best & Fastest)
-    # This visits the same JSON API the browser uses to populate the table
     try:
         logger.info("   -> Fetching VIX from API (api/allIndices)...")
         driver.get(VIX_API_URL)
         
-        # Wait for JSON text to appear in body
         WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         json_str = driver.find_element(By.TAG_NAME, "body").text
         
         data = json.loads(json_str)
-        # Search for the VIX object in the list
         for item in data.get('data', []):
             name = item.get('index', '') or item.get('indexSymbol', '')
             if name == "INDIA VIX":
@@ -139,11 +134,7 @@ def get_india_vix_nse(driver: webdriver.Chrome) -> float:
         logger.info("   -> Fetching VIX from Indices Page (HTML Fallback)...")
         driver.get(INDICES_URL)
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        
-        # We use .text instead of .page_source as it handles spacing better
         page_text = driver.find_element(By.TAG_NAME, "body").text
-        
-        # Look for "INDIA VIX" followed by numbers
         match = re.search(r'INDIA\s*VIX.*?(\d{2}\.\d{2})', page_text)
         if match:
             vix = float(match.group(1))
@@ -216,8 +207,7 @@ def switch_expiry(driver: webdriver.Chrome, dropdown_element, value_to_select: s
 
 def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
     try:
-        # --- NEW: FORCE WAIT FOR OPTION TABLE ---
-        # This ensures the table ID exists in DOM before we try to read it
+        # --- FORCE WAIT FOR OPTION TABLE ---
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "optionChainTable-indices"))
@@ -261,29 +251,27 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
         chain_df = chain_df[pd.to_numeric(chain_df[strike_col], errors='coerce').notnull()].copy()
         chain_df[strike_col] = chain_df[strike_col].astype(float)
         
-        # --- MODIFIED: SMART ATM FINDING ---
+        # --- SMART ATM FINDING ---
         chain_df['diff'] = abs(chain_df[strike_col] - spot_price)
-        # Sort by proximity to spot. Index 0 is now Strict ATM.
         chain_df = chain_df.sort_values('diff').reset_index(drop=True)
         
         atm_row = chain_df.iloc[0]
-        atm_strike = atm_row[strike_col] # Keep strict ATM strike
+        atm_strike = atm_row[strike_col] 
 
         def safe_float(val):
             try: return float(val) if val != '-' else 0.0
             except: return 0.0
 
-        # 1. STRADDLE (Strict ATM)
+        # 1. STRADDLE 
         straddle_price = safe_float(atm_row[ltp_cols[0]]) + safe_float(atm_row[ltp_cols[1]])
 
-        # 2. IV (Smart Search - Scan up to 5 nearest neighbors)
+        # 2. IV (Smart Search)
         avg_iv = 0.0
         for i in range(min(5, len(chain_df))):
             row = chain_df.iloc[i]
             call_iv = safe_float(row[iv_cols[0]])
             put_iv = safe_float(row[iv_cols[1]])
             
-            # If valid IV found, use it and break
             if call_iv > 0 and put_iv > 0:
                 avg_iv = (call_iv + put_iv) / 2
                 break
@@ -293,12 +281,10 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
             elif put_iv > 0:
                 avg_iv = put_iv
                 break
-            # If 0, loop continues to next nearest neighbor
 
-        # 3. SKEW (Needs sorted by strike again)
+        # 3. SKEW 
         skew_index = 0.0
         try:
-            # Re-sort by strike to find OTMs correctly
             chain_df_sorted = chain_df.sort_values(strike_col).reset_index(drop=True)
             unique_strikes = sorted(chain_df_sorted[strike_col].unique())
             if len(unique_strikes) > 1:
@@ -332,7 +318,6 @@ def get_live_data_diagnostics() -> Optional[Dict]:
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--ignore-certificate-errors")
     
-    # 1. Random User Agent
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -341,7 +326,6 @@ def get_live_data_diagnostics() -> Optional[Dict]:
     chosen_ua = random.choice(user_agents)
     options.add_argument(f"user-agent={chosen_ua}")
     
-    # 2. Disable Automation Flags
     options.add_argument("--disable-blink-features=AutomationControlled") 
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
@@ -349,7 +333,6 @@ def get_live_data_diagnostics() -> Optional[Dict]:
     logger.info("🚀 Launching Headless Browser (Stealth Mode)...")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     
-    # 3. CDP Command Overrides (The Magic Fix)
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": chosen_ua})
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
@@ -369,7 +352,7 @@ def get_live_data_diagnostics() -> Optional[Dict]:
         
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
-            logger.error("❌ Expiry Dropdown not found. (Blocked or Changed Layout)")
+            logger.error("❌ Expiry Dropdown not found.")
             return None
 
         expiries = get_monthly_expiries(driver, dropdown)
@@ -420,8 +403,7 @@ def update_market_data():
         logger.error("❌ Scrape Failed: Spot Price is 0.")
         return
 
-    # --- MODIFIED: FAILSAFE FOR DEAD M3 IV ---
-    # If M3 IV is missing (0), copy M2 IV to prevent "Inverted Curve" panic
+    # --- FAILSAFE FOR DEAD M3 IV ---
     if live_data.get('m3_iv', 0) == 0:
         if live_data.get('m2_iv', 0) > 0:
             logger.warning("⚠️ M3 IV is 0. Using M2 IV as fallback (Flat Curve Failsafe).")
@@ -440,7 +422,7 @@ def update_market_data():
     timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     today_date = datetime.now().strftime('%Y-%m-%d')
     
-    # One Record Per Day Logic
+    # One Record Per Day Logic (Overwrite today, keep history)
     cursor.execute("DELETE FROM market_logs WHERE timestamp LIKE ?", (f"{today_date}%",))
     
     cursor.execute('''
@@ -460,3 +442,4 @@ def update_market_data():
 if __name__ == "__main__":
     init_db()
     update_market_data()
+    
