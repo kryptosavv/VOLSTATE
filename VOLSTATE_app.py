@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # --- CONFIG ---
-DB_NAME = "fake_market_data.db"
+DB_NAME = "market_data.db"
 
 st.set_page_config(
     page_title="VOLSTATE Dashboard", 
@@ -691,3 +691,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
