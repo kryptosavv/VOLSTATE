@@ -9,13 +9,13 @@ from datetime import datetime, timedelta
 
 # --- IMPORT DOCUMENTATION MODULE ---
 try:
-    from volstate_docs import render_documentation_tab
+    from VOLSTATE_docs import render_documentation_tab
 except ImportError:
     def render_documentation_tab():
-        st.error("volstate_docs.py not found. Please ensure the file exists in the same directory.")
+        st.error("VOLSTATE_docs.py not found. Please ensure the file exists in the same directory.")
 
 # --- CONFIG ---
-DB_NAME = "fake_market_data.db"
+DB_NAME = "market_data.db"
 
 st.set_page_config(
     page_title="VOLSTATE System", 
