@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # --- CONFIG ---
-DB_NAME = "market_data.db"
+DB_NAME = "fake_market_data.db"
 
 st.set_page_config(
     page_title="VOLSTATE Dashboard", 
@@ -29,19 +29,34 @@ st.markdown("""
     .pill-orange { background-color: #fd7e14; }
     .pill-gray { background-color: #444; opacity: 0.5; }
     
-    /* Subtle Highlight for RPV Box */
+    /* Executive Summary Box */
+    .exec-box {
+        background-color: #1e252e;
+        border: 2px solid #444;
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .cis-score { font-size: 48px; font-weight: 900; color: #fff; }
+    .cis-label { font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    .status-badge { padding: 8px 16px; border-radius: 6px; font-weight: bold; font-size: 20px; text-transform: uppercase; color: #000;}
+
+    /* Regime Box (Demoted) */
     .regime-box { 
         text-align: center; 
-        padding: 20px; 
+        padding: 15px; 
         border-radius: 12px; 
         margin-bottom: 25px; 
         border: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        backdrop-filter: blur(10px);
+        background-color: rgba(255, 255, 255, 0.05);
     }
     
-    .regime-label { font-size: 42px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
-    .regime-sub { font-size: 14px; opacity: 0.8; margin-top: 5px; font-family: monospace; }
+    .regime-label { font-size: 24px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
+    .regime-sub { font-size: 12px; opacity: 0.8; margin-top: 5px; font-family: monospace; }
+    
     .grid-tile { background-color: #161b22; border: 1px solid #333; border-radius: 6px; padding: 15px; height: 110px; display: flex; flex-direction: column; justify-content: space-between; }
     .tile-header { font-size: 13px; color: #888; text-transform: uppercase; font-weight: 600; }
     .tile-value { font-size: 24px; font-weight: 800; margin: 2px 0; }
@@ -64,6 +79,10 @@ st.markdown("""
     .rpv-seg { height: 100%; }
     /* Hide Streamlit Date Input Label if desired */
     .stDateInput label { display: none; }
+    
+    /* Utility classes for Theta Cycle Highlighting */
+    .cycle-highlight { color: #ddd; font-weight: bold; }
+    .cycle-dim { color: #555; text-decoration: line-through; font-size: 0.9em;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -253,18 +272,51 @@ def detect_pre_stress(rpv_df):
     }
     return all(conditions.values()), conditions
 
-# --- ENGINE WRAPPERS ---
+# --- 5️⃣ CIS ENGINE (NEW) ---
 
-SIGNAL_LABELS = {
-    "iv": "ATM IV rising", "straddle": "Straddle decay stalled",
-    "back_month": "Back-month IV bidding", "term": "Term structure stress",
-    "skew": "Skew expanding (tail demand)", "disconnect": "Spot–Vol disconnect"
-}
+def compute_cis_score(rpv, drift, stress_accel, std_pct, m1_iv, m2_iv):
+    # Inputs
+    C = rpv['COMPRESSION']
+    T = rpv['TRANSITION']
+    S = rpv['STRESS']
+    
+    # 1. Theta Component: Positive if decay (std_pct negative)
+    # Target: 0.25% daily decay
+    theta_raw = -std_pct
+    theta_hat = np.clip(theta_raw / 0.25, -1, 1)
+    
+    # 2. Insulation Component: M2 - M1
+    # Target: 1.0 vol point buffer
+    k_raw = m2_iv - m1_iv
+    k_hat = np.clip(k_raw / 1.0, -1, 1)
+    
+    # 3. Drift Component
+    d_raw = drift['STRESS']
+    d_hat = np.clip(d_raw / 0.10, 0, 1)
+    
+    # 4. Accel Component
+    a_val = 1.0 if stress_accel else 0.0
+    
+    # FORMULA
+    # CIS = +0.40(C+T) + 0.20(Theta) + 0.15(K) - 0.50(S) - 0.30(Drift) - 0.20(Accel)
+    cis_val = (0.40 * (C + T)) + (0.20 * theta_hat) + (0.15 * k_hat) - (0.50 * S) - (0.30 * d_hat) - (0.20 * a_val)
+    
+    return np.clip(cis_val, -1, 1)
+
+def get_cis_status(score):
+    if score > 0.35: return "SAFE", "#28a745"
+    if score > 0.15: return "CAUTION", "#ffc107"
+    if score > 0.0: return "DEFENSIVE", "#fd7e14"
+    if score > -0.25: return "EXIT BIAS", "#dc3545"
+    return "IMMEDIATE EXIT", "#dc3545"
+
+# --- ENGINE WRAPPERS ---
 
 def run_engine_live(df):
     df_c = df.sort_values('timestamp', ascending=True).copy()
-    if len(df_c) < 3: return None, None, df_c.iloc[-1]
+    if len(df_c) < 5: return None, None, df_c.iloc[-1]
 
+    # Current Snapshot
     curr, prev, prev2 = df_c.iloc[-1], df_c.iloc[-2], df_c.iloc[-3]
     rpv, lhs = compute_rpv(curr, prev, prev2)
     dominant = max(rpv, key=rpv.get)
@@ -277,37 +329,67 @@ def run_engine_live(df):
     elif rpv[dominant] > 0.4: confidence = "MEDIUM"
     else: confidence = "LOW (UNSTABLE)"
 
+    # History for Dynamics
+    rpv_df_hist = compute_rpv_series(df_c.tail(15))
+    drift = compute_rpv_drift(rpv_df_hist)
+    pre_stress, ps_details = detect_pre_stress(rpv_df_hist)
+    
+    # CIS Calculation
+    std_pct = ((curr['m1_straddle'] - prev['m1_straddle']) / prev['m1_straddle']) * 100
+    m1 = curr['m1_iv']
+    m2 = curr.get('m2_iv', m1) # Fallback if missing
+    
+    cis_score = compute_cis_score(rpv, drift, pre_stress, std_pct, m1, m2)
+    cis_label, cis_color = get_cis_status(cis_score)
+
     risk_posture = derive_risk_posture(rpv)
-    drivers = [SIGNAL_LABELS[k] for k, v in lhs.items() if v[dominant] > 0.6]
-    counterforces = [SIGNAL_LABELS[k] for k, v in lhs.items() if v[dominant] < 0.3]
+    drivers = [k for k, v in lhs.items() if v[dominant] > 0.6] # Simplified
+    counterforces = [k for k, v in lhs.items() if v[dominant] < 0.3]
     
     dte = curr.get('m1_dte', 30)
     is_roll, is_late = dte >= 28, dte <= 7
     
     iv_chg = curr['m1_iv'] - prev['m1_iv']
-    std_pct = ((curr['m1_straddle'] - prev['m1_straddle']) / prev['m1_straddle']) * 100
-    slope = curr['m3_iv'] - curr['m1_iv']
+    slope = curr['m3_iv'] - curr['m1_iv'] # Kept for display, but CIS uses M2
     skew_chg = curr['skew_index'] - prev['skew_index']
+    m2_m1_spread = m2 - m1
     
+    # RENAMED SIGNALS FOR UI
     signals = {
-        't1': (iv_chg > 0.2, "RISING" if iv_chg > 0.2 else "STABLE", f"{iv_chg:+.2f}%"),
-        't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%"),
-        't3': (None, "SEE RPV", "Probabilistic"),
-        't4': (slope < 0, "INVERTED" if slope < 0 else "NORMAL", f"{slope:.2f}"),
-        't5': (skew_chg > 0.3, "RISING" if skew_chg > 0.3 else "FLAT", f"{skew_chg:+.2f}"),
-        't6': (None, "SEE RPV", "Probabilistic")
+        't1': (iv_chg > 0.2, "RISING" if iv_chg > 0.2 else "STABLE", f"{iv_chg:+.2f}%"), # Front Stress
+        't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%"), # Theta Eff
+        't4': (m2_m1_spread < 0, "INVERTED" if m2_m1_spread < 0 else "NORMAL", f"{m2_m1_spread:.2f}"), # Carry Insulation
+        't5': (skew_chg > 0.3, "RISING" if skew_chg > 0.3 else "FLAT", f"{skew_chg:+.2f}"), # Crash Hedge
+    }
+
+    # Theta Cycle Flags
+    entry_allowed = (cis_score >= 0.15) and (rpv['COMPRESSION'] + rpv['TRANSITION'] >= 0.55)
+    harvest_warning = (drift['STRESS'] > 0.05) or (rpv['STRESS'] > 0.15)
+    exit_trigger = (cis_score < 0) or (rpv['STRESS'] >= 0.25) or pre_stress
+
+    cycle_status = {
+        "entry": ("✅ SAFE", "#28a745") if entry_allowed else ("🛑 NO ENTRY", "#dc3545"),
+        "harvest": ("⚠️ CAUTION", "#ffc107") if harvest_warning else ("✅ STABLE", "#28a745"),
+        "exit": ("🚨 EXIT NOW", "#dc3545") if exit_trigger else ("HOLD", "#888")
     }
 
     context = {
         'regime': dominant, 'color': color, 'confidence': confidence,
         'rpv': rpv, 'risk': risk_posture, 'drivers': drivers, 'counterforces': counterforces,
-        'is_roll': is_roll, 'is_late': is_late, 'dte': dte
+        'is_roll': is_roll, 'is_late': is_late, 'dte': dte,
+        'cycle': cycle_status,
+        'cis': {'score': cis_score, 'label': cis_label, 'color': cis_color},
+        'entry_bool': entry_allowed,
+        'harvest_bool': harvest_warning,
+        'exit_bool': exit_trigger
     }
     return signals, context, curr
 
 def calculate_historical_regime(df):
     df_sorted = df.sort_values('timestamp', ascending=True).copy()
     history = []
+    if len(df_sorted) < 5: return pd.DataFrame()
+    
     for i in range(2, len(df_sorted)):
         curr, prev, prev2 = df_sorted.iloc[i], df_sorted.iloc[i-1], df_sorted.iloc[i-2]
         rpv, _ = compute_rpv(curr, prev, prev2)
@@ -327,173 +409,261 @@ def get_full_rpv_history(df):
         rows.append(row)
     return pd.DataFrame(rows)
 
-# --- PAGE RENDERING FUNCTIONS ---
+# --- INFO SECTIONS ---
 
 def render_dashboard_key():
     with st.expander("ℹ️ **Dashboard Key & Glossary (Click to Expand)**", expanded=False):
         st.markdown("""
-        ### 📊 **1. The Regime Banner (RPV)**
-        * **Regime Probability Vector (RPV):** The multi-colored bar shows the "mix" of market states. Markets are rarely 100% one thing.
-        * **Confidence:** Based on *Entropy*. "High" means the market has a clear direction. "Low" means signals are conflicting.
+        ### 📊 **1. Carry Integrity Score (CIS)**
+        * **The Gauge:** A single score (-1.0 to +1.0) measuring the structural safety of a short gamma position.
+        * **Green (> +0.35):** Full Carry Mode.
+        * **Yellow (+0.15 to +0.35):** Reduced Size.
+        * **Red (< 0):** Hard Exit Bias.
         
-        ### 🧭 **2. Regime Dynamics (Momentum)**
-        * **📈 RPV Drift:** Measures the *speed* of change. If Stress is low but rising fast (Green Arrow), be careful.
-        * **⚠️ Pre-Stress Monitor:** Detects hidden acceleration in tail risk before the VIX spikes.
+        ### 🔄 **2. Optimal Theta Cycle Control**
+        * **Phase 1: Entry:** Gates your trade initiation. Only enter if "SAFE" (Green).
+        * **Phase 2: Harvest:** Monitors your active position. "STABLE" means let theta decay work.
+        * **Phase 3: Exit Trigger:** The emergency brake. If "EXIT NOW" appears, close the trade immediately.
 
-        ### 📉 **3. Analytics Charts (Detailed Breakdown)**
+        ### 📉 **3. Analytics Charts (Renamed)**
         
-        **1. Regime Timeline (Dots)**
-        * *What:* Shows the historical dominance of regimes over time.
-        * *Interpret:* Look for stability (clustered dots) vs instability (rapid color switching). 
-
-        **2. Nifty Spot vs ATM Straddle**
-        * *What:* Compares Nifty price (Blue) to Straddle Price (Red Dotted).
-        * *Bullish (for Sellers):* Red line sloping down. Straddle is losing value (Theta decay is working).
-        * *Bearish (for Sellers):* Red line spiking up. Movement is outpacing expected decay (Gamma risk).
-
-        **3. Regime Probabilities (Stacked Area)**
-        * *What:* The "under the hood" view of the RPV evolution.
-        * *Interpret:* Watch the **Red (Stress)** and **Orange (Expansion)** layers. If these areas are growing wider over time, structural risk is increasing.
-
-        **4. Term Structure Slope**
-        * *What:* Difference between Far Month IV and Near Month IV.
-        * *Green (Positive):* Contango. Normal market. 
-        * *Red (Negative):* Backwardation. Inverted curve indicating panic.
-
-        **5. Daily Straddle Change %**
-        * *What:* The daily P&L of holding an ATM Straddle.
-        * *Green (Negative):* The straddle lost value (Good for short volatility).
-        * *Red (Positive):* The straddle gained value (Good for long volatility).
-
-        **6. VRP Index (Edge)**
-        * *What:* Volatility Risk Premium (Implied Vol - Realized Vol).
-        * *Green:* IV is expensive relative to actual movement (Edge for sellers).
-        * *Red:* IV is cheap relative to actual movement (Edge for buyers).
-
-        **7. Skew Index**
-        * *What:* The relative cost of Puts vs Calls.
-        * *Rising:* Institutions are buying Puts (Fear/Hedging).
-        * *Falling:* Complacency (Greed).
-
-        **8. India VIX**
-        * *What:* The baseline fear gauge for the Indian market.
-        * *Interpret:* Use as a confirmation tool, not a leading indicator.
-
-        **9. Price Displacement (SD)**
-        * *What:* Price movement measured in Standard Deviations (Sigma).
-        * *Red Dashed Line:* The "1 Sigma" limit. Moves above this line are statistically significant and break the "Compression" regime.
+        **1. Front Stress (M1):** (Formerly IV Momentum). Measures immediate panic in the nearest expiry.
+        **2. Theta Efficiency:** (Formerly Straddle Decay). Is the straddle losing value fast enough to justify the risk?
+        **3. Carry Insulation (M2-M1):** (Formerly Term Structure). The buffer between your trade (M2) and the storm (M1).
+        **4. Crash Hedging Pressure:** (Formerly Skew). Are institutions buying OTM Puts aggressively?
         """, unsafe_allow_html=True)
 
-def render_thesis_section():
-    with st.expander("📘 **Methodology & Thesis (Deep Dive)**", expanded=False):
+def render_volstate_methodology():
+    with st.expander("📘 **VOLSTATE Methodology**", expanded=False):
         st.markdown("""
-        ### 🧮 1. The Core Philosophy: Fuzzy Logic
-        Markets rarely flip a binary switch from "Safe" to "Dangerous." They drift through gradients of probability. 
-        Instead of asking *"Is the market in Stress?"* (Yes/No), we ask: 
-        > *"What is the probability that we are in Stress versus Transition?"*
+        # 📘 The VOLSTATE Methodology
 
-        This engine calculates a **Regime Probability Vector (RPV)** for every data point:
-        * **Binary:** `Stress = False`
-        * **VOLSTATE:** `Stress = 0.22`, `Transition = 0.45`, `Expansion = 0.33`
+        This engine uses Fuzzy Logic. Unlike binary logic (True/False), Fuzzy Logic deals with "degrees of truth."
+
+        - Binary: "Is IV rising?" -> Yes (1) / No (0).
+        - Fuzzy: "Is IV rising?" -> Somewhat (0.4), Yes (0.8), Extremely (1.0).
+
+        We use 6 "Likelihood Functions" to convert raw market data into these probabilistic scores.
+
+        ## 1. The Likelihood Functions (The "Sensors")
+
+        ### Sensor 1: ATM IV Momentum (iv_likelihood)
+        **Question:** Is the cost of options (Implied Volatility) rising?
+        - **Input:** iv_chg (Today's IV - Yesterday's IV).
+        - **The Logic:**
+            - **Compression** hates rising IV. If IV goes up, Compression score drops to 0.
+            - **Stress** loves rising IV. If IV spikes > 0.8, Stress score hits 1.0.
+            - **Expansion** tolerates rising IV (it needs movement).
+
+        ### Sensor 2: Straddle Decay (straddle_likelihood)
+        **Question:** Is the ATM Straddle losing value?
+        - **Input:** std_pct (% Change in Straddle Price).
+        - **The Logic:**
+            - **Compression:** Requires the straddle to lose value (Theta decay > Vega/Gamma). If price drops significantly (< -0.2%), score is 1.0.
+            - **Stress:** Occurs when the straddle gains value rapidly (Vega explosion).
+
+        ### Sensor 3: Back-Month Spread (back_month_likelihood)
+        **Question:** Are traders bidding up the next month's volatility relative to this month?
+        - **Input:** bm_spread (Change in Far IV - Change in Near IV).
+        - **The Logic:**
+            - If Far IV is rising faster than Near IV, traders fear the future (**Transition/Expansion**).
+            - If Near IV is rising faster than Far IV, traders fear the now (**Stress/Inversion**).
+            - If Far IV is falling faster, the curve is steepening (**Compression**).
+
+        ### Sensor 4: Term Structure (term_likelihood)
+        **Question:** Is the curve normal (Contango) or inverted (Backwardation)?
+        - **Input:** slope (Far IV - Near IV).
+        - **The Logic:**
+            - **Normal Market (Contango):** Far months are expensive (uncertainty). Slope > 0. This is Compression.
+            - **Panic Market (Inversion):** Near months are expensive (immediate fear). Slope < 0. This is Stress.
+
+        ### Sensor 5: Skew Index (skew_likelihood)
+        **Question:** How expensive are Puts vs. Calls?
+        - **Input:** skew_chg (Change in Skew).
+        - **The Logic:**
+            - **Rising Skew:** People are buying crash protection (Puts). This signals Stress or Expansion.
+            - **Falling Skew:** People are selling Puts or buying Calls. This signals Compression (Complacency).
+            - **Why weight 1.4?** Skew is the "smart money" indicator. It is harder to fake than Spot Price.
+
+        ### Sensor 6: Spot-Vol Disconnect (disconnect_likelihood)
+        **Question:** Is the market broken?
+        - **Input:** is_disconnect (Boolean: Price UP + Vol UP).
+        - **The Logic:**
+            - **Normal Physics:** Price UP -> Vol DOWN.
+            - **Broken Physics:** Price UP -> Vol UP.
+            - This "Disconnect" usually happens right before a crash (euphoria) or during a squeeze. It strongly weights Stress (0.9) and Expansion (0.7).
+
+        ## 2. The Aggregation Engine (compute_rpv)
+        Once the sensors give us scores, we combine them.
+
+        **Step A: Weighted Sum**
+        We don't treat all sensors equally.
+        - High Confidence: Skew (1.4), IV (1.2), Straddle (1.2).
+        - Low Confidence: Disconnect (0.8) - it's noisy.
+
+        **Step B: Normalization**
+        We turn raw scores into a percentage (Probability).
+
+        ## 3. The Entropy Filter (The "BS Detector")
+        This helps us know if the RPV is trustworthy.
+        - If RPV is {0.9, 0.0, 0.1, 0.0}, the model is certain. (**Low Entropy**)
+        - If RPV is {0.25, 0.25, 0.25, 0.25}, the model is confused. (**High Entropy**)
+
+        **Application in Dashboard:**
+        We only label confidence as "HIGH" if:
+        1. The winner has > 55% probability.
+        2. AND Entropy is low (< 1.1).
+        """
+        )
+
+def render_theta_cycle_philosophy():
+    with st.expander("🔄 **Optimal Theta Cycle Philosophy**", expanded=False):
+        st.markdown("""
+        ### 🎯 The Core Philosophy: "Permission, Not Prediction"
+        You are not a direction trader. You are a **Structured VRP Harvester**. 
+        Your edge comes from selling time and variance, surviving transitions, and not overstaying when the regime turns hostile.
+        
+        **VOLSTATE's Job:** 1. Gate entries. 2. Modulate size. 3. Force early exits when structure breaks.
 
         ---
 
-        ### 📡 2. The Inputs (Sensors)
-        We use 6 "Vital Signs" to diagnose the market. Each input is chosen to measure a specific structural characteristic of volatility.
+        ### 🟢 Phase 1: Entry Window (≈ 45 DTE)
+        **Action:** Initiate VRP Harvest.
+        **The "Entry Gate" Criteria (Must Pass ALL):**
+        1.  **Structure:** `Compression + Transition ≥ 55%`
+        2.  **Safety:** `Stress ≤ 15%`
+        3.  **Clarity:** Entropy is NOT High (Confidence ≠ LOW).
+        4.  **Momentum:** `Stress Drift ≤ +0.05` (over last 3 bars).
 
-        #### 🌡️ 1. ATM IV Momentum (`Weight: 1.2`)
-        * **Question:** Is the "price of anxiety" rising or falling?
-        * **The Logic:** Volatility exhibits mean reversion.
-            * **Rising IV:** Markets are pricing in *new* risks (Stress/Transition).
-            * **Falling IV:** Markets are digesting *known* risks (Compression).
-        
-        #### ⏳ 2. Straddle Decay (`Weight: 1.2`)
-        * **Question:** Is the market moving enough to pay the rent?
-        * **The Logic:** An ATM Straddle (Call + Put) bleeds value daily due to Time Decay (Theta).
-            * **Decaying:** The market is pinned. Sellers are winning. (Compression).
-            * **Holding/Rising:** Price movement is outpacing time decay. (Expansion/Stress).
-
-        #### 🔭 3. Back-Month Spread (`Weight: 1.0`)
-        * **Question:** Is there "stealth" bidding for future protection?
-        * **The Logic:** Smart money often hedges 30-60 days out before a storm.
-            * **Spread Widening:** Traders fear the future more than the present. A **Transition** is starting.
-
-        #### 📉 4. Term Structure Slope (`Weight: 1.0`)
-        * **Question:** Is the curve Healthy (Contango) or Panic (Inverted)?
-        * **The Logic:**
-            * **Contango (Slope > 0):** Normal. Future is uncertain, so long-dated insurance costs more.
-            * **Backwardation (Slope < 0):** Panic. Demand for *immediate* liquidity overrides future value. This is the hallmark of **Stress**.
-
-        #### ⚠️ 5. Skew Index (`Weight: 1.4`)
-        * **Question:** Are Puts getting expensive relative to Calls?
-        * **The Logic:** Institutions buy Puts to hedge. Retail buys Calls to speculate.
-            * **Rising Skew:** "Smart money" is hedging tail risk, even if the market is rising. This is the most reliable leading indicator of fragility.
-        
-        #### 🔗 6. Spot-Vol Disconnect (`Weight: 0.8`)
-        * **Question:** Is the physics of the market broken?
-        * **The Logic:** Normally, Price UP = Volatility DOWN.
-            * **Disconnect:** If Price rises AND Volatility rises, it indicates instability (Euphoria or Short Squeeze). It typically precedes a violent reversal.
+        *If these pass → Enter normally.*
+        *If borderline → Enter smaller.*
+        *If fail → Skip the cycle entirely.*
 
         ---
 
-        ### 🧠 3. The Logic Engine
+        ### 🟡 Phase 2: Harvest Window (45 → 30 DTE)
+        **Action:** Let Theta work. Monitor weekly.
+        **The "Risk Thermostat":**
+        * **Stress < 15%:** ✅ Full Carry Allowed.
+        * **Stress 15-20%:** ⚠️ Freeze new risk. Stop adding.
+        * **Stress > 20%:** 🛑 Defensive actions required.
         
-        **The Aggregation**
-        The system takes the 6 sensor inputs, applies their respective weights, and normalizes the result to sum to 100%. This creates the **RPV**.
+        **Watch For:**
+        * **Stress Slope:** If rising steadily, it's a warning.
+        * **Skew Spike:** If Skew Likelihood > 0.6 but price is calm, institutions are hedging ahead of you. Take the hint.
 
-        **The "BS Detector" (Entropy)**
-        We calculate the **Entropy** of the probability vector to measure confusion.
-        * **Low Entropy:** The market has picked a clear direction (e.g., 90% Compression).
-        * **High Entropy:** The signals are conflicting (e.g., 25% across all four). The dashboard labels this **"LOW CONFIDENCE (UNSTABLE)"**.
+        ---
 
-        **Risk Posture (Translation to Action)**
-        The probability scores are translated into trading rules:
-        
-        1.  **Tail Hedge Logic:**
-            * **Stress < 15%:** `OPTIONAL` (Ignore tail risk).
-            * **Stress 15-20%:** `ACCUMULATE` (Buy cheap OTM puts. Momentum is building).
-            * **Stress > 20%:** `MANDATORY` (Capital preservation mode. Volatility is now expensive).
-        
-        2.  **Long Gamma Logic:**
-            * We only buy options when `(Expansion + Stress > 50%)` **AND** `(Compression < 30%)`. This prevents buying breakouts in "fake" markets.
+        ### 🔴 Phase 3: Exit Window (30 → 21 DTE)
+        **Action:** Hard exit at 21 DTE.
+        **The "Early Exit Override" (Fire Exit if ANY occur):**
+        1.  **Stress ≥ 25%** (The "Hard Deck").
+        2.  **Stress Drift > +0.08** (Acceleration).
+        3.  **Expansion + Stress ≥ 60%** AND Straddle Stalls.
+        4.  **Entropy Spikes** (Confidence flips to LOW).
+
+        *If any of these fire, exit immediately, even at 35 DTE. Do not wait for the hard exit.*
         """)
 
 def render_dashboard(df_selected, signals, ctx, curr, df_all):
-    # --- REGIME BANNER (HIGHLIGHTED & UPDATED) ---
-    rpv_html = f"""<div class="regime-box" style="background-color: {ctx['color']}15; border-color: {ctx['color']}80;">
-<div style="text-align: left; font-size: 11px; color: #888; letter-spacing: 1px; font-weight: 600;">REGIME PROBABILITY VECTOR (RPV)</div>
-<div class="regime-sub" style="color: {ctx['color']}; margin-top: 5px;">DETECTED REGIME (PROBABILISTIC)</div>
-<div class="regime-label" style="color: {ctx['color']}">{ctx['regime']}</div>
-<div class="regime-sub" style="margin-top: 5px;">CONFIDENCE: {ctx['confidence']}</div>
+    # --- EXECUTIVE SUMMARY (CIS) ---
+    cis = ctx['cis']
+    st.markdown(f"""
+    <div class="exec-box" style="border-color: {cis['color']};">
+        <div>
+            <div style="font-size: 14px; color: #888;">EXECUTIVE COMMAND</div>
+            <div class="status-badge" style="background-color: {cis['color']};">{cis['label']}</div>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 14px; color: #888;">CARRY INTEGRITY SCORE</div>
+            <div class="cis-score">{cis['score']*100:.0f}%</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-<div class="rpv-bar" style="display: flex; height: 8px; background: #222; border-radius: 4px; overflow: hidden; margin-top: 15px; width: 100%;">
+    # --- REGIME BANNER (DEMOTED) ---
+    p_comp = int(ctx['rpv']['COMPRESSION'] * 100)
+    p_tran = int(ctx['rpv']['TRANSITION'] * 100)
+    p_expa = int(ctx['rpv']['EXPANSION'] * 100)
+    p_strs = int(ctx['rpv']['STRESS'] * 100)
+
+    rpv_html = f"""<div class="regime-box" style="background-color: {ctx['color']}15; border-color: {ctx['color']}80;">
+<div style="text-align: center; font-size: 11px; color: #888; letter-spacing: 1px; font-weight: 600;">MARKET STRUCTURE (DIAGNOSTIC)</div>
+<div class="regime-label" style="color: {ctx['color']}; font-size: 20px;">{ctx['regime']} <span style='font-size: 12px; color: #aaa'>({ctx['confidence']})</span></div>
+
+<div class="rpv-bar" style="display: flex; height: 6px; background: #222; border-radius: 4px; overflow: hidden; margin-top: 10px; width: 100%;">
     <div style="width: {ctx['rpv']['COMPRESSION']*100}%; background: #28a745;" title="Compression"></div>
     <div style="width: {ctx['rpv']['TRANSITION']*100}%; background: #ffc107;" title="Transition"></div>
     <div style="width: {ctx['rpv']['EXPANSION']*100}%; background: #fd7e14;" title="Expansion"></div>
     <div style="width: {ctx['rpv']['STRESS']*100}%; background: #dc3545;" title="Stress"></div>
 </div>
 
-<div style="display: flex; justify-content: space-between; font-size: 11px; color: #bbb; margin-top: 8px; width: 100%;">
-    <div style="text-align: center; flex: 1; border-right: 1px solid #333;">COMP<br><span style="color: #28a745; font-weight: bold;">{ctx['rpv']['COMPRESSION']:.0%}</span></div>
-    <div style="text-align: center; flex: 1; border-right: 1px solid #333;">TRANS<br><span style="color: #ffc107; font-weight: bold;">{ctx['rpv']['TRANSITION']:.0%}</span></div>
-    <div style="text-align: center; flex: 1; border-right: 1px solid #333;">EXP<br><span style="color: #fd7e14; font-weight: bold;">{ctx['rpv']['EXPANSION']:.0%}</span></div>
-    <div style="text-align: center; flex: 1;">STRS<br><span style="color: #dc3545; font-weight: bold;">{ctx['rpv']['STRESS']:.0%}</span></div>
+<div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; font-family: monospace; font-weight: bold;">
+    <div style="color: #28a745;">COMP: {p_comp}%</div>
+    <div style="color: #ffc107;">TRAN: {p_tran}%</div>
+    <div style="color: #fd7e14;">EXPA: {p_expa}%</div>
+    <div style="color: #dc3545;">STRS: {p_strs}%</div>
 </div>
+
 </div>"""
     st.markdown(rpv_html, unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
-    with c1: s = signals['t1']; render_tile("ATM IV MOMENTUM", s[0], s[1], s[2])
-    with c2: s = signals['t2']; render_tile("STRADDLE DECAY", s[0], s[1], s[2])
-    with c3: s = signals['t3']; render_tile("BACK MONTH BID", s[0], s[1], s[2])
+    # --- OPTIMAL THETA CYCLE CONTROL UI ---
+    cyc = ctx['cycle']
+    
+    # Reason Validation Logic strings
+    p1_sub = "Edge > 55% & Stress Low" if ctx['entry_bool'] else "Edge Low / Stress High"
+    p2_sub = "Stress Drift > 0.05" if ctx['harvest_bool'] else "Drift Stable"
+    p3_sub = "Stress > 0.25 or Accel" if ctx['exit_bool'] else "Limits Not Breached"
+
+    if ctx['entry_bool']:
+        p1_html = "<span class='cycle-highlight'>Edge > 55% & Stress Low</span><br><span class='cycle-dim'>Edge Low / Stress High</span>"
+    else:
+        p1_html = "<span class='cycle-dim'>Edge > 55% & Stress Low</span><br><span class='cycle-highlight' style='color:#dc3545'>Edge Low / Stress High</span>"
+    
+    if ctx['harvest_bool']:
+        p2_html = "<span class='cycle-highlight' style='color:#ffc107'>Stress Drift > 0.05</span><br><span class='cycle-dim'>Drift Stable</span>"
+    else:
+        p2_html = "<span class='cycle-dim'>Stress Drift > 0.05</span><br><span class='cycle-highlight'>Drift Stable</span>"
+    
+    if ctx['exit_bool']:
+        p3_html = "<span class='cycle-highlight' style='color:#dc3545'>Stress > 0.25 or Accel</span><br><span class='cycle-dim'>Limits Not Breached</span>"
+    else:
+        p3_html = "<span class='cycle-dim'>Stress > 0.25 or Accel</span><br><span class='cycle-highlight'>Limits Not Breached</span>"
+
+    st.markdown(f"""
+    <div style="margin-bottom: 25px; padding: 15px; background: #161b22; border: 1px solid #444; border-radius: 8px;">
+        <div style="font-size: 14px; font-weight: bold; color: #fff; margin-bottom: 10px; text-transform: uppercase;">Optimal Theta Cycle Control</div>
+        <div style="display: flex; justify-content: space-between; gap: 15px;">
+            <div style="flex: 1; text-align: center; padding: 10px; background: #222; border-radius: 6px;">
+                <div style="font-size: 11px; color: #888;">PHASE 1: ENTRY</div>
+                <div style="font-size: 16px; font-weight: bold; color: {cyc['entry'][1]}; margin-bottom: 5px;">{cyc['entry'][0]}</div>
+                <div style="font-size: 10px; color: #aaa; line-height: 1.4;">{p1_html}</div>
+            </div>
+            <div style="flex: 1; text-align: center; padding: 10px; background: #222; border-radius: 6px;">
+                <div style="font-size: 11px; color: #888;">PHASE 2: HARVEST</div>
+                <div style="font-size: 16px; font-weight: bold; color: {cyc['harvest'][1]}; margin-bottom: 5px;">{cyc['harvest'][0]}</div>
+                <div style="font-size: 10px; color: #aaa; line-height: 1.4;">{p2_html}</div>
+            </div>
+            <div style="flex: 1; text-align: center; padding: 10px; background: #222; border-radius: 6px;">
+                <div style="font-size: 11px; color: #888;">PHASE 3: EXIT TRIGGER</div>
+                <div style="font-size: 16px; font-weight: bold; color: {cyc['exit'][1]}; margin-bottom: 5px;">{cyc['exit'][0]}</div>
+                <div style="font-size: 10px; color: #aaa; line-height: 1.4;">{p3_html}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- 4 COLUMN SIGNALS (RENAMED) ---
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: s = signals['t1']; render_tile("FRONT STRESS (M1)", s[0], s[1], s[2])
+    with c2: s = signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2])
+    with c3: s = signals['t4']; render_tile("CARRY INSULATION (M2-M1)", s[0], s[1], s[2], is_stress=True)
+    with c4: s = signals['t5']; render_tile("CRASH HEDGING PRESSURE", s[0], s[1], s[2])
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    c4, c5, c6 = st.columns(3)
-    with c4: s = signals['t4']; render_tile("TERM STRUCTURE", s[0], s[1], s[2], is_stress=True)
-    with c5: s = signals['t5']; render_tile("TAIL RISK (SKEW)", s[0], s[1], s[2])
-    with c6: s = signals['t6']; render_tile("VOL vs SPOT DISCONNECT", s[0], s[1], s[2])
-
+    # --- MINI DIAGNOSTICS ---
     st.markdown(f"""
         <div class="mini-diag">
             <span>SPOT: {curr['spot_price']:.0f}</span>
@@ -543,7 +713,6 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         cols = st.columns(4)
         for i, r in enumerate(REGIMES):
             arrow = "↑" if drift[r] > 0.01 else "↓" if drift[r] < -0.01 else "-"
-            color = "green" if drift[r] > 0 else "red" if drift[r] < 0 else "gray"
             with cols[i]:
                 st.metric(label=r.title(), value=f"{drift[r]:.2f}", delta=arrow)
     
@@ -681,8 +850,9 @@ def main():
     # 1. Dashboard Key & Glossary
     render_dashboard_key()
     
-    # 2. Methodology & Thesis
-    render_thesis_section()
+    # 2. Methodology Tabs
+    render_volstate_methodology()
+    render_theta_cycle_philosophy()
     
     # 3. Raw Database
     start_date_label = df_all['timestamp'].min().strftime('%d %b %Y')
@@ -691,4 +861,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
