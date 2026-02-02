@@ -6,10 +6,19 @@ import re
 import io
 import json
 import logging
-import random # Added for User-Agent rotation
+import random
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 from contextlib import contextmanager
+
+# --- SELENIUM IMPORTS ---
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -18,15 +27,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
-
-# --- SELENIUM ---
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 # --- CONFIG ---
 DB_NAME = "market_data.db"
@@ -42,6 +42,7 @@ SPOT_PRICE_MAX = 50000
 VIX_MIN = 5.0
 VIX_MAX = 100.0
 
+# --- DATABASE FUNCTIONS ---
 @contextmanager
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME)
@@ -55,104 +56,138 @@ def get_db_connection():
     finally:
         conn.close()
 
+def migrate_db(conn):
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(market_logs)")
+    columns = [info[1] for info in c.fetchall()]
+    
+    new_columns = {
+        'm1_call_iv': 'REAL',
+        'm1_put_iv': 'REAL',
+        'skew_put_avg_9_10_11_iv': 'REAL',
+        'skew_call_avg_9_10_11_iv': 'REAL',
+        'm1_month': 'TEXT',
+        'skew_index': 'REAL',
+        'm1_iv': 'REAL'
+    }
+    
+    for col_name, col_type in new_columns.items():
+        if col_name not in columns:
+            logger.info(f"🛠️ Migrating DB: Adding column '{col_name}'...")
+            try: c.execute(f"ALTER TABLE market_logs ADD COLUMN {col_name} {col_type}")
+            except Exception as e: logger.error(f"Migration failed for {col_name}: {e}")
+
 def init_db():
     with get_db_connection() as conn:
         c = conn.cursor()
-        
-        # --- FIX: REMOVED "DROP TABLE" COMMANDS ---
-        # Kept strictly to "CREATE IF NOT EXISTS" so history is preserved.
-        
         c.execute('''
             CREATE TABLE IF NOT EXISTS market_logs (
                 timestamp DATETIME PRIMARY KEY,
                 spot_price REAL NOT NULL,
                 m1_straddle REAL,
+                m1_call_iv REAL,
+                m1_put_iv REAL,
                 m1_iv REAL,
                 m2_iv REAL,
                 m3_iv REAL,
-                m1_dte INTEGER,
+                skew_put_avg_9_10_11_iv REAL,
+                skew_call_avg_9_10_11_iv REAL,
                 skew_index REAL,
-                india_vix REAL
+                india_vix REAL,
+                m1_month TEXT
             )
         ''')
+        migrate_db(conn)
     logger.info(f"✅ Database {DB_NAME} checked/ready.")
 
+# --- UTILS ---
 def validate_spot_price(price: float) -> bool:
     if not isinstance(price, (int, float)): return False
     return SPOT_PRICE_MIN <= price <= SPOT_PRICE_MAX
 
 def validate_vix(vix: float) -> bool:
-    if not isinstance(vix, (int, float)): return False
-    return VIX_MIN <= vix <= VIX_MAX
+    return isinstance(vix, (int, float)) and VIX_MIN <= vix <= VIX_MAX
 
-def is_weekend() -> bool:
-    today = datetime.now()
-    if today.weekday() >= 5:
-        logger.info(f"🚫 Today is {today.strftime('%A')} (Weekend). No scraping.")
-        return True
-    return False
+# --- SCRAPERS ---
+def check_scrape_permission(driver: webdriver.Chrome) -> bool:
+    logger.info("   -> Checking Scrape Permission (Visual & Date)...")
+    try:
+        driver.get(HOME_URL)
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        page_text = driver.find_element(By.TAG_NAME, "body").text
+        
+        # 1. Check for explicit "Open" text
+        open_indicators = ["Normal Market is Open", "Market Status : Open", "Capital Market : Open", "NIFTY 50 : Open"]
+        for indicator in open_indicators:
+            if re.search(indicator, page_text, re.IGNORECASE):
+                logger.info(f"   ✅ Detected Status: '{indicator}' -> GO")
+                return True
+
+        # 2. Check for Today's Date in header (indicates fresh EOD data)
+        # Regex for dates like "02-Feb-2026"
+        date_pattern = r"(\d{2}-[A-Za-z]{3}-\d{4})"
+        matches = re.findall(date_pattern, page_text)
+        today_str = datetime.now().strftime("%d-%b-%Y")
+        
+        if matches:
+            for date_str in matches:
+                if date_str.lower() == today_str.lower():
+                    logger.info(f"   ✅ Detected Today's Date ({date_str}) in header -> GO")
+                    return True
+        
+        # Fallback numeric date check
+        today_num = datetime.now().strftime("%d-%m-%Y")
+        if today_num in page_text:
+             logger.info(f"   ✅ Detected Today's Date ({today_num}) -> GO")
+             return True
+
+        if "Normal Market has Closed" in page_text:
+            logger.warning(f"   ⛔ Market Closed and no fresh data for {today_str} found.")
+            return False
+
+        logger.warning("   ⚠️ No Open status OR Today's date found.")
+        return False
+    except Exception as e:
+        logger.error(f"   ❌ Scrape Check Failed: {e}")
+        return False
 
 def check_live_holiday(driver: webdriver.Chrome) -> bool:
     try:
-        logger.info("   -> Checking NSE Holiday API...")
         driver.get(HOLIDAY_API_URL)
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         json_str = driver.find_element(By.TAG_NAME, "body").text
         data = json.loads(json_str)
-        holidays = data.get('FO', [])
         today_str = datetime.now().strftime("%d-%b-%Y")
-        for h in holidays:
+        for h in data.get('FO', []):
             if h.get('tradingDate') == today_str:
                 logger.info(f"🚫 Today is a Trading Holiday: {h.get('description')}")
                 return True
         return False
-    except Exception as e:
-        logger.error(f"⚠️ Holiday Check Failed (Assuming Open): {e}")
-        return False
+    except: return False
 
-# --- NEW API-BASED VIX LOGIC ---
 def get_india_vix_nse(driver: webdriver.Chrome) -> float:
-    # METHOD 1: Direct API (Best & Fastest)
     try:
-        logger.info("   -> Fetching VIX from API (api/allIndices)...")
         driver.get(VIX_API_URL)
-        
         WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        json_str = driver.find_element(By.TAG_NAME, "body").text
-        
-        data = json.loads(json_str)
+        data = json.loads(driver.find_element(By.TAG_NAME, "body").text)
         for item in data.get('data', []):
-            name = item.get('index', '') or item.get('indexSymbol', '')
-            if name == "INDIA VIX":
+            if (item.get('index') or item.get('indexSymbol')) == "INDIA VIX":
                 vix = float(item.get('last', 0))
-                if validate_vix(vix): return vix
-    except Exception as e:
-        logger.warning(f"      ⚠️ API VIX failed, trying fallback... ({e})")
-
-    # METHOD 2: HTML Scraping (Indices Page Fallback)
+                if validate_vix(vix): return round(vix, 2)
+    except: pass
     try:
-        logger.info("   -> Fetching VIX from Indices Page (HTML Fallback)...")
         driver.get(INDICES_URL)
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        page_text = driver.find_element(By.TAG_NAME, "body").text
-        match = re.search(r'INDIA\s*VIX.*?(\d{2}\.\d{2})', page_text)
-        if match:
-            vix = float(match.group(1))
-            if validate_vix(vix): return vix
+        match = re.search(r'INDIA\s*VIX.*?(\d{2}\.\d{2})', driver.find_element(By.TAG_NAME, "body").text)
+        if match: return round(float(match.group(1)), 2)
     except: pass
-    
-    logger.warning("❌ Could not fetch VIX from API or HTML.")
-    return 0.0
+    return 0.00
 
 def find_expiry_dropdown(driver: webdriver.Chrome):
     try:
-        current_year = str(datetime.now().year)
-        next_year = str(datetime.now().year + 1)
         WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "select")))
-        selects = driver.find_elements(By.TAG_NAME, "select")
-        for sel in selects:
-            if current_year in sel.text or next_year in sel.text:
-                return sel
+        for sel in driver.find_elements(By.TAG_NAME, "select"):
+            if str(datetime.now().year) in sel.text: return sel
         return None
     except: return None
 
@@ -164,282 +199,304 @@ def get_monthly_expiries(driver: webdriver.Chrome, dropdown_element) -> Optional
             val = opt.get_attribute("value")
             text = opt.text
             if "Select" in text or not val: continue
-            try:
-                d_obj = datetime.strptime(text, "%d-%b-%Y")
-                date_map.append((d_obj, val))
+            try: date_map.append((datetime.strptime(text, "%d-%b-%Y"), val))
             except: continue
         
         if not date_map: return None
         date_map.sort(key=lambda x: x[0])
         month_groups = {}
         for d_obj, val in date_map:
-            key = (d_obj.year, d_obj.month)
-            if key not in month_groups: month_groups[key] = []
-            month_groups[key].append((d_obj, val))
+            month_groups.setdefault((d_obj.year, d_obj.month), []).append((d_obj, val))
         
-        monthly_expiries = []
-        for key in sorted(month_groups.keys()):
-            monthly_expiries.append(month_groups[key][-1])
-        return monthly_expiries[:3]
+        return [month_groups[k][-1] for k in sorted(month_groups.keys())][:3]
     except: return None
 
-def switch_expiry(driver: webdriver.Chrome, dropdown_element, value_to_select: str) -> bool:
+def switch_expiry(driver: webdriver.Chrome, dropdown, value: str) -> bool:
     try:
-        old_content = driver.page_source
-        driver.execute_script("""
-            var select = arguments[0];
-            var value = arguments[1];
-            var options = Array.from(select.options);
-            var optionToSelect = options.find(o => o.value === value);
-            if (optionToSelect) {
-                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set;
-                nativeInputValueSetter.call(select, value);
-                select.dispatchEvent(new Event('change', { bubbles: true }));
-                select.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-        """, dropdown_element, value_to_select)
-        
+        old_src = driver.page_source
+        driver.execute_script("var s=arguments[0]; var v=arguments[1]; s.value=v; s.dispatchEvent(new Event('change', {bubbles:true}));", dropdown, value)
         for _ in range(10):
             time.sleep(1)
-            if driver.page_source != old_content: return True
+            if driver.page_source != old_src: return True
         return False
     except: return False
 
 def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
     try:
-        # --- FORCE WAIT FOR OPTION TABLE ---
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "optionChainTable-indices"))
-            )
-        except:
-            logger.warning("⚠️ Timeout waiting for optionChainTable-indices (proceeding with page_source)")
-
-        page_source = driver.page_source
-        match_spot = re.search(r'NIFTY\s+([0-9,]+\.\d{2})', page_source)
-        if not match_spot: 
-            match_spot = re.search(r'([0-9]{5}\.\d{2})', page_source)
-            if not match_spot: raise Exception("Spot not found")
-        
-        spot_price = float(match_spot.group(1).replace(",", ""))
-        
-        if not validate_spot_price(spot_price): 
-            logger.warning(f"Spot price {spot_price} looks weird, but continuing.")
-
-        html_buffer = io.StringIO(page_source)
-        dfs = pd.read_html(html_buffer)
-        if not dfs: raise Exception("No tables found")
-        
-        chain_df = None
-        for df in dfs:
-            if df.shape[0] > 10 and df.shape[1] > 10:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = ['_'.join(map(str, col)).strip() for col in df.columns.values]
-                col_str = ' '.join(df.columns.astype(str).str.upper())
-                if 'STRIKE' in col_str and col_str.count('IV') >= 2:
-                    chain_df = df
-                    break
-        
-        if chain_df is None: raise Exception("Option chain table not found")
-
-        strike_col = next((c for c in chain_df.columns if "STRIKE" in str(c).upper()), None)
-        iv_cols = [c for c in chain_df.columns if "IV" in str(c).upper()]
-        ltp_cols = [c for c in chain_df.columns if "LTP" in str(c).upper()]
-        
-        if not strike_col or len(iv_cols) < 2: raise Exception("Missing required columns")
-
-        chain_df = chain_df[pd.to_numeric(chain_df[strike_col], errors='coerce').notnull()].copy()
-        chain_df[strike_col] = chain_df[strike_col].astype(float)
-        
-        # --- SMART ATM FINDING ---
-        chain_df['diff'] = abs(chain_df[strike_col] - spot_price)
-        chain_df = chain_df.sort_values('diff').reset_index(drop=True)
-        
-        atm_row = chain_df.iloc[0]
-        atm_strike = atm_row[strike_col] 
-
-        def safe_float(val):
-            try: return float(val) if val != '-' else 0.0
-            except: return 0.0
-
-        # 1. STRADDLE 
-        straddle_price = safe_float(atm_row[ltp_cols[0]]) + safe_float(atm_row[ltp_cols[1]])
-
-        # 2. IV (Smart Search)
-        avg_iv = 0.0
-        for i in range(min(5, len(chain_df))):
-            row = chain_df.iloc[i]
-            call_iv = safe_float(row[iv_cols[0]])
-            put_iv = safe_float(row[iv_cols[1]])
-            
-            if call_iv > 0 and put_iv > 0:
-                avg_iv = (call_iv + put_iv) / 2
-                break
-            elif call_iv > 0:
-                avg_iv = call_iv
-                break
-            elif put_iv > 0:
-                avg_iv = put_iv
-                break
-
-        # 3. SKEW 
-        skew_index = 0.0
-        try:
-            chain_df_sorted = chain_df.sort_values(strike_col).reset_index(drop=True)
-            unique_strikes = sorted(chain_df_sorted[strike_col].unique())
-            if len(unique_strikes) > 1:
-                step = unique_strikes[1] - unique_strikes[0]
-                target_put = atm_strike - (step * 5)
-                target_call = atm_strike + (step * 5)
-                
-                put_row = chain_df_sorted.iloc[(chain_df_sorted[strike_col] - target_put).abs().argsort()[:1]]
-                call_row = chain_df_sorted.iloc[(chain_df_sorted[strike_col] - target_call).abs().argsort()[:1]]
-                
-                if not put_row.empty and not call_row.empty:
-                    p_iv = safe_float(put_row[iv_cols[1]].values[0])
-                    c_iv = safe_float(call_row[iv_cols[0]].values[0])
-                    if p_iv > 0 and c_iv > 0: skew_index = p_iv - c_iv
+        # Wait for table to ensure page loaded
+        try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except: pass
 
-        return { "spot": spot_price, "iv": avg_iv, "straddle": straddle_price, "skew": skew_index }
+        spot = 0.0
+        
+        # --- ROBUST SPOT PRICE EXTRACTION ---
+        
+        # Method 1: Target the specific ID (Most Reliable)
+        try:
+            element = driver.find_element(By.ID, "equity_underlyingVal")
+            text = element.text.strip() # e.g., "NIFTY 23,518.50"
+            match = re.search(r'([0-9,]+\.\d{2})', text)
+            if match:
+                spot = float(match.group(1).replace(",", ""))
+                logger.info(f"       ✅ Spot found via ID: {spot}")
+        except: 
+            pass
+
+        # Method 2: Fallback Regex on Page Source (Context Aware)
+        if spot == 0.0:
+            src = driver.page_source
+            # Matches "NIFTY" or "NIFTY 50" followed by a number
+            match = re.search(r'NIFTY\s*(?:50)?\s*[:\s]\s*([0-9,]+\.\d{2})', src, re.IGNORECASE)
+            if match:
+                spot = float(match.group(1).replace(",", ""))
+                logger.info(f"       ✅ Spot found via Regex: {spot}")
+
+        # --- VALIDATION ---
+        if not validate_spot_price(spot):
+            logger.error(f"❌ Invalid Spot Price Scraped: {spot}")
+            raise Exception("Spot Price Validation Failed")
+
+        # --- TABLE PARSING ---
+        dfs = pd.read_html(io.StringIO(driver.page_source))
+        if not dfs: raise Exception("No tables")
+        
+        df = next((d for d in dfs if d.shape[0] > 10 and d.shape[1] > 10), None)
+        if df is None: raise Exception("Chain table not found")
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ['_'.join(map(str, col)).strip() for col in df.columns.values]
+        
+        strike_col = next((c for c in df.columns if "STRIKE" in str(c).upper()), None)
+        iv_cols = [c for c in df.columns if "IV" in str(c).upper()]
+        ltp_cols = [c for c in df.columns if "LTP" in str(c).upper()]
+        
+        if not strike_col or len(iv_cols) < 2: raise Exception("Missing columns")
+
+        df = df[pd.to_numeric(df[strike_col], errors='coerce').notnull()].copy()
+        df[strike_col] = df[strike_col].astype(float)
+        
+        # --- 1. GENERAL CALCULATIONS (ATM / Straddle) ---
+        df['diff'] = abs(df[strike_col] - spot)
+        df_sorted = df.sort_values('diff').reset_index(drop=True)
+        
+        atm = df_sorted.iloc[0]
+        def safe(v):
+            try: return float(v) if v!='-' else 0.0
+            except: return 0.0
+
+        straddle = safe(atm[ltp_cols[0]]) + safe(atm[ltp_cols[1]])
+        
+        atm_call_iv = 0.0
+        atm_put_iv = 0.0
+        for i in range(min(5, len(df_sorted))):
+            c_iv = safe(df_sorted.iloc[i][iv_cols[0]])
+            p_iv = safe(df_sorted.iloc[i][iv_cols[1]])
+            if c_iv > 0 and p_iv > 0: 
+                atm_call_iv = c_iv
+                atm_put_iv = p_iv
+                break
+        
+        avg_iv = (atm_call_iv + atm_put_iv) / 2 if (atm_call_iv > 0 and atm_put_iv > 0) else 0.0
+        
+        # --- 2. REFINED SKEW: PRICE-BASED BASKET SELECTION ---
+        skew_val = 0.0
+        avg_put_iv_basket = 0.0
+        avg_call_iv_basket = 0.0
+        
+        try:
+            # A. Filter for Liquid '100' strikes
+            df_100 = df[df[strike_col] % 100 == 0].copy()
+            
+            # B. Define Targets (2% OTM) and Basket Width (100 pts)
+            target_put_center = spot * 0.98
+            target_call_center = spot * 1.02
+            
+            # C. Define the 3 specific price points for the basket
+            # We want strikes closest to: [Target, Target-100, Target+100]
+            basket_offsets = [0, -100, 100]
+            
+            p_targets = [target_put_center + x for x in basket_offsets]
+            c_targets = [target_call_center + x for x in basket_offsets]
+            
+            def get_basket_avg(targets, iv_col_name):
+                valid_ivs = []
+                for tgt in targets:
+                    # Find closest strike to this specific target price
+                    if not df_100.empty:
+                        closest_idx = (df_100[strike_col] - tgt).abs().idxmin()
+                        iv = safe(df_100.loc[closest_idx][iv_col_name])
+                        if iv > 0: valid_ivs.append(iv)
+                
+                if valid_ivs:
+                    return sum(valid_ivs) / len(valid_ivs)
+                return 0.0
+
+            avg_put_iv_basket = get_basket_avg(p_targets, iv_cols[1]) # Put IV
+            avg_call_iv_basket = get_basket_avg(c_targets, iv_cols[0]) # Call IV
+
+            if avg_put_iv_basket > 0 and avg_call_iv_basket > 0:
+                skew_val = avg_put_iv_basket - avg_call_iv_basket
+                    
+        except Exception as e:
+            logger.warning(f"Skew calc warning: {e}")
+
+        # --- ROUNDING ALL VALUES TO 2 DECIMALS ---
+        return {
+            "spot": round(spot, 2), 
+            "straddle": round(straddle, 2), 
+            "m1_call_iv": round(atm_call_iv, 2),
+            "m1_put_iv": round(atm_put_iv, 2),
+            "m1_iv": round(avg_iv, 2),
+            "skew_index": round(skew_val, 2), 
+            "skew_put_avg_9_10_11_iv": round(avg_put_iv_basket, 2),
+            "skew_call_avg_9_10_11_iv": round(avg_call_iv_basket, 2)
+        }
     except Exception as e:
         logger.warning(f"Parse error: {e}")
         return None
 
-def get_live_data_diagnostics() -> Optional[Dict]:
-    if is_weekend(): return None
-
-    # --- STEALTH MODE CONFIGURATION ---
+# --- MAIN EXECUTION ---
+def update_market_data():
+    logger.info("🔄 STARTING UPDATE PROCESS")
+    
     options = Options()
-    options.add_argument("--headless=new") 
-    options.add_argument("--disable-gpu") 
-    options.add_argument("--no-sandbox")   
-    options.add_argument("--disable-dev-shm-usage") 
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--ignore-certificate-errors")
-    
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     ]
     chosen_ua = random.choice(user_agents)
     options.add_argument(f"user-agent={chosen_ua}")
-    
-    options.add_argument("--disable-blink-features=AutomationControlled") 
+    options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    
-    logger.info("🚀 Launching Headless Browser (Stealth Mode)...")
+
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": chosen_ua})
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-    final_record = {}
-
+    
     try:
+        can_scrape = check_scrape_permission(driver)
+        
+        if can_scrape:
+            logger.info("✅ Permission Granted. Proceeding with scraping.")
+        else:
+            if check_live_holiday(driver):
+                logger.info("🚫 Market is CLOSED (Holiday). Stopping.")
+                driver.quit()
+                return
+            if datetime.now().weekday() >= 5:
+                logger.info("🚫 Market is CLOSED (Weekend + No Fresh Data). Stopping.")
+                driver.quit()
+                return
+            logger.warning("⚠️ Permission failed, but attempting scrape as failsafe...")
+        
         logger.info("   -> Initializing Session...")
         driver.get(HOME_URL)
-        time.sleep(5) 
-
-        if check_live_holiday(driver):
-            return None
-
+        time.sleep(5)
+        
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
-        time.sleep(10) 
-        
+        time.sleep(10)
+
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
             logger.error("❌ Expiry Dropdown not found.")
-            return None
+            return
 
         expiries = get_monthly_expiries(driver, dropdown)
         if not expiries: 
             logger.error("❌ No expiries found.")
-            return None
+            return
+
+        live_data = {}
+        m1_month_str = ""
 
         for i, (date_obj, val) in enumerate(expiries):
             label = f"m{i+1}"
             logger.info(f"   -> Scraping {label.upper()} ({date_obj.strftime('%d-%b')})...")
             
+            if label == "m1":
+                m1_month_str = date_obj.strftime("%b")
+
             dropdown = find_expiry_dropdown(driver)
             switch_expiry(driver, dropdown, val)
             row_data = scrape_table_data(driver)
             
             if row_data:
                 if label == "m1":
-                    final_record['spot_price'] = row_data['spot']
-                    final_record['m1_straddle'] = row_data['straddle']
-                    final_record['m1_iv'] = row_data['iv']
-                    final_record['skew_index'] = row_data['skew']
-                    dte = (date_obj - datetime.now()).days
-                    final_record['m1_dte'] = max(0, dte)
-                elif label == "m2": final_record['m2_iv'] = row_data['iv']
-                elif label == "m3": final_record['m3_iv'] = row_data['iv']
+                    live_data.update({
+                        'spot_price': row_data['spot'],
+                        'm1_straddle': row_data['straddle'],
+                        'm1_call_iv': row_data['m1_call_iv'],
+                        'm1_put_iv': row_data['m1_put_iv'],
+                        'm1_iv': row_data['m1_iv'],
+                        'skew_index': row_data['skew_index'],
+                        'skew_put_avg_9_10_11_iv': row_data['skew_put_avg_9_10_11_iv'],
+                        'skew_call_avg_9_10_11_iv': row_data['skew_call_avg_9_10_11_iv']
+                    })
+                elif label == "m2": live_data['m2_iv'] = row_data['m1_iv'] 
+                elif label == "m3": live_data['m3_iv'] = row_data['m1_iv']
             else:
                 logger.warning(f"       ⚠️ Failed to scrape {label}")
 
-        final_record['india_vix'] = get_india_vix_nse(driver)
-        return final_record
+        live_data['india_vix'] = get_india_vix_nse(driver)
+        live_data['m1_month'] = m1_month_str
+
+        if live_data.get('spot_price', 0) == 0:
+            logger.error("❌ Scrape Failed: Spot Price is 0.")
+            return
+
+        if live_data.get('m3_iv', 0) == 0:
+            if live_data.get('m2_iv', 0) > 0: live_data['m3_iv'] = live_data['m2_iv']
+            elif live_data.get('m1_iv', 0) > 0: live_data['m3_iv'] = live_data['m1_iv']
+
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        schema_keys = [
+            'spot_price', 'm1_straddle', 'm1_call_iv', 'm1_put_iv', 'm1_iv', 
+            'm2_iv', 'm3_iv', 'skew_put_avg_9_10_11_iv', 'skew_call_avg_9_10_11_iv', 
+            'skew_index', 'india_vix', 'm1_month'
+        ]
+        
+        for k in schema_keys: 
+            if k not in live_data: 
+                live_data[k] = 0.00 if k != 'm1_month' else ""
+            elif k != 'm1_month':
+                # Double ensure formatting for the dictionary being sent to DB
+                live_data[k] = round(live_data[k], 2)
+
+        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        today_date = datetime.now().strftime('%Y-%m-%d')
+        
+        cursor.execute("DELETE FROM market_logs WHERE timestamp LIKE ?", (f"{today_date}%",))
+        cursor.execute('''
+            INSERT OR REPLACE INTO market_logs 
+            (timestamp, spot_price, m1_straddle, m1_call_iv, m1_put_iv, m1_iv, m2_iv, m3_iv, 
+             skew_put_avg_9_10_11_iv, skew_call_avg_9_10_11_iv, skew_index, india_vix, m1_month)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            timestamp_str, live_data['spot_price'], live_data['m1_straddle'], 
+            live_data['m1_call_iv'], live_data['m1_put_iv'], live_data['m1_iv'],
+            live_data['m2_iv'], live_data['m3_iv'], 
+            live_data['skew_put_avg_9_10_11_iv'], live_data['skew_call_avg_9_10_11_iv'],
+            live_data['skew_index'], live_data['india_vix'], live_data['m1_month']
+        ))
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ DATA SAVED for {today_date}!")
+        logger.info(f"   Spot: {live_data['spot_price']} | M1 Call IV: {live_data['m1_call_iv']:.2f}% | Skew Index: {live_data['skew_index']:.2f}")
 
     except Exception as e:
-        logger.error(f"❌ Critical Error: {e}")
-        return None
+        logger.error(f"❌ Main Loop Error: {e}")
     finally:
-        try: driver.quit()
-        except: pass
-
-def update_market_data():
-    logger.info("🔄 STARTING UPDATE PROCESS")
-    live_data = get_live_data_diagnostics()
-    
-    if not live_data:
-        logger.info("⏹️ No data collected (Holiday/Weekend/Error).")
-        return
-    
-    if live_data.get('spot_price', 0) == 0:
-        logger.error("❌ Scrape Failed: Spot Price is 0.")
-        return
-
-    # --- FAILSAFE FOR DEAD M3 IV ---
-    if live_data.get('m3_iv', 0) == 0:
-        if live_data.get('m2_iv', 0) > 0:
-            logger.warning("⚠️ M3 IV is 0. Using M2 IV as fallback (Flat Curve Failsafe).")
-            live_data['m3_iv'] = live_data['m2_iv']
-        elif live_data.get('m1_iv', 0) > 0:
-            logger.warning("⚠️ M3 & M2 IV are 0. Using M1 IV as fallback.")
-            live_data['m3_iv'] = live_data['m1_iv']
-
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    defaults = {'spot_price': 0, 'm1_straddle': 0, 'm1_iv': 0, 'm2_iv': 0, 'm3_iv': 0, 'm1_dte': 0, 'skew_index': 0, 'india_vix': 0}
-    for k, v in defaults.items():
-        if k not in live_data: live_data[k] = v
-
-    timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    today_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # One Record Per Day Logic (Overwrite today, keep history)
-    cursor.execute("DELETE FROM market_logs WHERE timestamp LIKE ?", (f"{today_date}%",))
-    
-    cursor.execute('''
-        INSERT OR REPLACE INTO market_logs 
-        (timestamp, spot_price, m1_straddle, m1_iv, m2_iv, m3_iv, m1_dte, skew_index, india_vix)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        timestamp_str, live_data['spot_price'], live_data['m1_straddle'], live_data['m1_iv'],
-        live_data['m2_iv'], live_data['m3_iv'], live_data['m1_dte'], live_data['skew_index'], live_data['india_vix']
-    ))
-    conn.commit()
-    conn.close()
-    
-    logger.info(f"✅ DATA SAVED for {today_date}!")
-    logger.info(f"   Spot: {live_data['spot_price']} | M1 IV: {live_data['m1_iv']:.2f}% | VIX: {live_data['india_vix']}")
+        driver.quit()
 
 if __name__ == "__main__":
     init_db()
     update_market_data()
-    
