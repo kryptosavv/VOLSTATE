@@ -7,7 +7,7 @@ import io
 import json
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from contextlib import contextmanager
 
@@ -19,7 +19,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -117,14 +117,12 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
-        # 1. Check for explicit "Open" text
         open_indicators = ["Normal Market is Open", "Market Status : Open", "Capital Market : Open", "NIFTY 50 : Open"]
         for indicator in open_indicators:
             if re.search(indicator, page_text, re.IGNORECASE):
                 logger.info(f"   ✅ Detected Status: '{indicator}' -> GO")
                 return True
 
-        # 2. Check for Today's Date in header (indicates fresh EOD data)
         date_pattern = r"(\d{2}-[A-Za-z]{3}-\d{4})"
         matches = re.findall(date_pattern, page_text)
         today_str = datetime.now().strftime("%d-%b-%Y")
@@ -135,7 +133,6 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
                     logger.info(f"   ✅ Detected Today's Date ({date_str}) in header -> GO")
                     return True
         
-        # Fallback numeric date check
         today_num = datetime.now().strftime("%d-%m-%Y")
         if today_num in page_text:
              logger.info(f"   ✅ Detected Today's Date ({today_num}) -> GO")
@@ -143,13 +140,13 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
 
         if "Normal Market has Closed" in page_text:
             logger.warning(f"   ⛔ Market Closed. Checking for data anyway...")
-            return True # CHANGED: Allow scrape even if closed, assuming EOD data is present
+            return True 
 
         logger.warning("   ⚠️ No Open status OR Today's date found.")
-        return True # CHANGED: Fallback to True to attempt scrape anyway
+        return True 
     except Exception as e:
         logger.error(f"   ❌ Scrape Check Failed: {e}")
-        return True # FAILSAFE: Try to scrape anyway
+        return True 
 
 def check_live_holiday(driver: webdriver.Chrome) -> bool:
     try:
@@ -183,27 +180,28 @@ def get_india_vix_nse(driver: webdriver.Chrome) -> float:
     except: pass
     return 0.00
 
+# --- SMART DROPDOWN FINDER ---
 def find_expiry_dropdown(driver: webdriver.Chrome):
     """
-    Robustly finds the expiry dropdown using specific ID first, then fallback to Select tag.
+    Scans ALL select elements to find the one containing date-like options.
     """
     try:
-        # 1. Try Specific ID used by NSE
+        # 1. Try Specific ID first
         try:
-            dropdown = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.ID, "select_opt_expiry_date"))
-            )
-            return dropdown
-        except:
-            logger.info("   ⚠️ ID 'select_opt_expiry_date' not found. Trying fallback...")
+            return driver.find_element(By.ID, "select_opt_expiry_date")
+        except: pass
 
-        # 2. Fallback: Find valid select element
+        # 2. Content-Aware Scan (The Fix)
         selects = driver.find_elements(By.TAG_NAME, "select")
-        current_year = str(datetime.now().year)
         for sel in selects:
-            # Check if it contains relevant year options
-            if current_year in sel.text:
-                return sel
+            try:
+                # Check the first few options for a date pattern (e.g., 26-Feb-2026)
+                text = sel.text
+                if re.search(r"\d{2}-[A-Za-z]{3}-\d{4}", text):
+                    logger.info("   🔎 Found Expiry Dropdown via Content Match.")
+                    return sel
+            except StaleElementReferenceException:
+                continue
         
         return None
     except Exception as e:
@@ -227,65 +225,68 @@ def get_monthly_expiries(driver: webdriver.Chrome, dropdown_element) -> Optional
         for d_obj, val in date_map:
             month_groups.setdefault((d_obj.year, d_obj.month), []).append((d_obj, val))
         
-        # Return the last expiry (monthly) for the next 3 months
         return [month_groups[k][-1] for k in sorted(month_groups.keys())][:3]
     except: return None
 
 def switch_expiry(driver: webdriver.Chrome, dropdown, value: str) -> bool:
     try:
-        # Trigger change event via JS
+        # Trigger change
         driver.execute_script("arguments[0].value = arguments[1];", dropdown, value)
         driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", dropdown)
         
-        # Wait for loading overlay to disappear if present
+        # Loader check
         try:
             WebDriverWait(driver, 2).until(EC.invisibility_of_element_located((By.CLASS_NAME, "loader")))
         except: pass
         
-        time.sleep(3) # Hard wait for table refresh
+        time.sleep(6) # Wait for table AJAX
         return True
     except: return False
 
+def extract_page_timestamp(driver: webdriver.Chrome) -> str:
+    try:
+        src = driver.page_source
+        match = re.search(r"As on\s+([A-Za-z]{3}\s+\d{2},\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+IST)", src)
+        if match: return match.group(1)
+        return "Unknown"
+    except: return "Error"
+
 def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
     try:
-        # Wait for table to ensure page loaded
         try: WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except: pass
 
+        # --- DATA FRESHNESS CHECK ---
+        page_time_str = extract_page_timestamp(driver)
+        logger.info(f"       🕒 Data Timestamp: {page_time_str}")
+
+        # If data is clearly old (optional strict check can be added here)
+        
         spot = 0.0
-        
-        # --- ROBUST SPOT PRICE EXTRACTION ---
-        
-        # Method 1: Target the specific ID (Most Reliable)
+        # --- SPOT PRICE ---
         try:
             element = driver.find_element(By.ID, "equity_underlyingVal")
-            text = element.text.strip() # e.g., "NIFTY 23,518.50"
+            text = element.text.strip() 
             match = re.search(r'([0-9,]+\.\d{2})', text)
             if match:
                 spot = float(match.group(1).replace(",", ""))
-                logger.info(f"       ✅ Spot found via ID: {spot}")
-        except: 
-            pass
+                logger.info(f"       ✅ Spot: {spot}")
+        except: pass
 
-        # Method 2: Fallback Regex on Page Source (Context Aware)
         if spot == 0.0:
             src = driver.page_source
-            # Matches "NIFTY" or "NIFTY 50" followed by a number
             match = re.search(r'NIFTY\s*(?:50)?\s*[:\s]\s*([0-9,]+\.\d{2})', src, re.IGNORECASE)
             if match:
                 spot = float(match.group(1).replace(",", ""))
-                logger.info(f"       ✅ Spot found via Regex: {spot}")
+                logger.info(f"       ✅ Spot (Regex): {spot}")
 
-        # --- VALIDATION ---
         if not validate_spot_price(spot):
-            logger.error(f"❌ Invalid Spot Price Scraped: {spot}")
-            raise Exception("Spot Price Validation Failed")
+            logger.error(f"❌ Invalid Spot Price: {spot}")
+            raise Exception("Spot Validation Failed")
 
         # --- TABLE PARSING ---
-        try:
-            dfs = pd.read_html(io.StringIO(driver.page_source))
-        except ValueError:
-             raise Exception("No tables found in page source")
+        try: dfs = pd.read_html(io.StringIO(driver.page_source))
+        except: raise Exception("No tables found")
              
         if not dfs: raise Exception("No tables parsed")
         
@@ -304,7 +305,7 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
         df = df[pd.to_numeric(df[strike_col], errors='coerce').notnull()].copy()
         df[strike_col] = df[strike_col].astype(float)
         
-        # --- 1. GENERAL CALCULATIONS (ATM / Straddle) ---
+        # --- CALCULATIONS ---
         df['diff'] = abs(df[strike_col] - spot)
         df_sorted = df.sort_values('diff').reset_index(drop=True)
         
@@ -327,41 +328,31 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
         
         avg_iv = (atm_call_iv + atm_put_iv) / 2 if (atm_call_iv > 0 and atm_put_iv > 0) else 0.0
         
-        # --- 2. REFINED SKEW: PRICE-BASED BASKET SELECTION ---
+        # --- SKEW ---
         skew_val = 0.0
         avg_put_iv_basket = 0.0
         avg_call_iv_basket = 0.0
         
         try:
-            # A. Filter for Liquid '100' strikes
             df_100 = df[df[strike_col] % 100 == 0].copy()
-            
-            # B. Define Targets (2% OTM) and Basket Width (100 pts)
             target_put_center = spot * 0.98
             target_call_center = spot * 1.02
-            
-            # C. Define the 3 specific price points for the basket
-            # We want strikes closest to: [Target, Target-100, Target+100]
             basket_offsets = [0, -100, 100]
-            
             p_targets = [target_put_center + x for x in basket_offsets]
             c_targets = [target_call_center + x for x in basket_offsets]
             
             def get_basket_avg(targets, iv_col_name):
                 valid_ivs = []
                 for tgt in targets:
-                    # Find closest strike to this specific target price
                     if not df_100.empty:
                         closest_idx = (df_100[strike_col] - tgt).abs().idxmin()
                         iv = safe(df_100.loc[closest_idx][iv_col_name])
                         if iv > 0: valid_ivs.append(iv)
-                
-                if valid_ivs:
-                    return sum(valid_ivs) / len(valid_ivs)
+                if valid_ivs: return sum(valid_ivs) / len(valid_ivs)
                 return 0.0
 
-            avg_put_iv_basket = get_basket_avg(p_targets, iv_cols[1]) # Put IV
-            avg_call_iv_basket = get_basket_avg(c_targets, iv_cols[0]) # Call IV
+            avg_put_iv_basket = get_basket_avg(p_targets, iv_cols[1]) 
+            avg_call_iv_basket = get_basket_avg(c_targets, iv_cols[0]) 
 
             if avg_put_iv_basket > 0 and avg_call_iv_basket > 0:
                 skew_val = avg_put_iv_basket - avg_call_iv_basket
@@ -369,7 +360,6 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
         except Exception as e:
             logger.warning(f"Skew calc warning: {e}")
 
-        # --- ROUNDING ALL VALUES TO 2 DECIMALS ---
         return {
             "spot": round(spot, 2), 
             "straddle": round(straddle, 2), 
@@ -411,7 +401,6 @@ def update_market_data():
     try:
         can_scrape = check_scrape_permission(driver)
         
-        # Even if permission fails, we log it but continue as a failsafe
         if not can_scrape:
              if check_live_holiday(driver):
                 logger.info("🚫 Market is CLOSED (Holiday). Stopping.")
@@ -425,20 +414,21 @@ def update_market_data():
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
         
-        # Explicit wait for the main table container
+        # HARD REFRESH to clear cache
+        driver.refresh()
+        
         try:
             WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except TimeoutException:
             logger.error("❌ TIMEOUT: Option chain table did not load.")
             return
 
-        time.sleep(5) # Additional buffer
+        time.sleep(5) 
 
+        # --- CRITICAL FIX: SMART DROPDOWN FINDER ---
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
             logger.error("❌ Expiry Dropdown not found (FATAL).")
-            # Log page source snippet for debugging if needed
-            # logger.error(driver.page_source[:1000]) 
             return
 
         expiries = get_monthly_expiries(driver, dropdown)
@@ -456,7 +446,7 @@ def update_market_data():
             if label == "m1":
                 m1_month_str = date_obj.strftime("%b")
 
-            # Re-find dropdown to avoid StaleElementReferenceException
+            # Re-find dropdown (stale element protection)
             dropdown = find_expiry_dropdown(driver)
             if dropdown:
                 switch_expiry(driver, dropdown, val)
@@ -486,7 +476,7 @@ def update_market_data():
             logger.error("❌ Scrape Failed: Spot Price is 0.")
             return
 
-        # Backfill missing far-month data
+        # Backfill
         if live_data.get('m3_iv', 0) == 0:
             if live_data.get('m2_iv', 0) > 0: live_data['m3_iv'] = live_data['m2_iv']
             elif live_data.get('m1_iv', 0) > 0: live_data['m3_iv'] = live_data['m1_iv']
@@ -504,7 +494,6 @@ def update_market_data():
             if k not in live_data: 
                 live_data[k] = 0.00 if k != 'm1_month' else ""
             elif k != 'm1_month':
-                # Double ensure formatting for the dictionary being sent to DB
                 live_data[k] = round(live_data[k], 2)
 
         timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
