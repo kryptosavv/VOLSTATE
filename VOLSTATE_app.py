@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import textwrap
 
 # --- IMPORT DOCUMENTATION MODULE ---
 try:
@@ -24,7 +25,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- CSS STYLING (DASHBOARD ONLY) ---
+# --- CSS STYLING ---
 st.markdown("""
     <style>
     .main { font-family: 'Segoe UI', sans-serif; background-color: #0e1117; }
@@ -45,10 +46,40 @@ st.markdown("""
     .pill-gray { background-color: #444; opacity: 0.5; }
     
     /* Exec Box */
-    .exec-box { background-color: #1e252e; border: 2px solid #444; border-radius: 10px; padding: 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-    .cis-score { font-size: 48px; font-weight: 900; color: #fff; display: flex; align-items: center; gap: 10px; }
-    .status-badge { padding: 8px 16px; border-radius: 6px; font-weight: bold; font-size: 20px; text-transform: uppercase; color: #000;}
+    .exec-box { 
+        background-color: #1e252e; 
+        border: 2px solid #444; 
+        border-radius: 10px; 
+        padding: 20px; 
+        margin-bottom: 20px; 
+        display: flex; 
+        justify-content: space-around; 
+        align-items: center; 
+    }
+    .cis-score { font-size: 42px; font-weight: 900; color: #fff; line-height: 1; }
+    .status-badge { padding: 6px 12px; border-radius: 4px; font-weight: bold; font-size: 16px; text-transform: uppercase; color: #000; display: inline-block; }
     .delta-arrow { font-size: 24px; font-weight: bold; }
+    .cis-context { font-size: 12px; color: #888; margin-top: 5px; font-style: italic; }
+
+    /* Permission Meter */
+    .perm-meter {
+        padding: 10px 15px; 
+        border-radius: 8px; 
+        background:#161b22; 
+        min-width: 160px;
+        text-align: center;
+    }
+
+    /* Divergence Warning Banner */
+    .div-warning {
+        padding: 12px;
+        border-radius: 6px;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 20px;
+        font-size: 16px;
+        border: 1px solid rgba(255,255,255,0.2);
+    }
 
     /* Regime Box */
     .regime-box { text-align: center; padding: 15px; border-radius: 12px; margin-bottom: 25px; border: 1px solid rgba(255, 255, 255, 0.1); background-color: rgba(255, 255, 255, 0.05); }
@@ -69,13 +100,72 @@ st.markdown("""
     .rpv-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 10px; width: 100%; }
     .stDateInput label { display: none; }
     
-    .strat-box { background-color: #1e252e; border-left: 4px solid #555; padding: 15px; margin-top: 20px; border-radius: 0 5px 5px 0; }
-    .strat-header { font-size: 16px; font-weight: bold; color: #ddd; margin-bottom: 10px; text-transform: uppercase; }
-    .strat-list { margin-bottom: 0; padding-left: 20px; color: #bbb; font-size: 14px; }
-    .strat-list li { margin-bottom: 5px; }
+    /* DYNAMICS CONSOLE (VIBRANT UPDATE) */
+    .dynamics-console {
+        background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+        border: 1px solid #555;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 25px;
+        align-items: center;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    .dynamics-title {
+        font-size: 12px; color: #aaa; font-weight: bold; letter-spacing: 1.5px; margin-bottom: 8px; text-transform: uppercase;
+    }
     
-    .cycle-highlight { color: #ddd; font-weight: bold; }
-    .cycle-dim { color: #555; text-decoration: line-through; font-size: 0.9em;}
+    /* Pre-Stress Panel */
+    .ps-panel {
+        flex: 1;
+        min-width: 200px;
+        border-right: 1px solid #444;
+        padding-right: 20px;
+    }
+    /* Glow Effects for Status */
+    .ps-status-safe { 
+        color: #00e676; 
+        font-size: 22px; 
+        font-weight: 900; 
+        text-shadow: 0 0 10px rgba(0, 230, 118, 0.2); 
+    }
+    .ps-status-danger { 
+        color: #ff1744; 
+        font-size: 22px; 
+        font-weight: 900; 
+        animation: pulse 1.5s infinite; 
+        text-shadow: 0 0 10px rgba(255, 23, 68, 0.3);
+    }
+    
+    .ps-metrics { font-family: monospace; font-size: 13px; color: #bbb; margin-top: 8px; }
+    
+    /* Drift Grid */
+    .drift-grid {
+        flex: 3;
+        display: flex;
+        justify-content: space-between;
+        gap: 15px;
+    }
+    .drift-item {
+        background: #0d1117;
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 12px;
+        flex: 1;
+        text-align: center;
+        transition: transform 0.2s, border-color 0.2s;
+        box-shadow: inset 0 0 15px rgba(0,0,0,0.3);
+    }
+    .drift-item:hover {
+        border-color: #777;
+        transform: translateY(-2px);
+    }
+    .drift-label { font-size: 11px; color: #999; font-weight: bold; letter-spacing: 0.5px; }
+    .drift-val { font-size: 18px; font-weight: bold; margin-top: 4px; }
+    
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
     </style>
 """, unsafe_allow_html=True)
 
@@ -122,7 +212,7 @@ def compute_rpv(curr, prev, prev2):
     bm_spread = (curr.get('m2_iv', 0) - prev.get('m2_iv', 0)) - iv_chg
     slope = curr['m3_iv'] - curr['m1_iv']
     skew_chg = curr['skew_index'] - prev['skew_index']
-    disc = (abs(((curr['spot_price'] - prev['spot_price']) / prev['spot_price']) * 100) < 0.1 and iv_chg > 0.5)
+    disc = (abs(((curr['spot_price'] - prev['spot_price']) / prev['spot_price']) * 100) < 0.15 and iv_chg > 0.5)
     
     lhs = {
         "iv": iv_likelihood(iv_chg), "straddle": straddle_likelihood(std_pct), "back_month": back_month_likelihood(bm_spread),
@@ -153,45 +243,145 @@ def compute_rpv_drift(rpv_df, lookback=3):
     return {r: (rpv_df[r].iloc[-1] - rpv_df[r].iloc[-(lookback+1)]) if len(rpv_df) > lookback else 0.0 for r in REGIMES}
 
 def detect_pre_stress(rpv_df):
-    if len(rpv_df) < 4: return False, {}
+    if len(rpv_df) < 4: return False, {"stress_slope": 0, "stress_accel": False, "stress_val": 0, "exp_val": 0}
     s, e = rpv_df["STRESS"].values, rpv_df["EXPANSION"].values
     slope = s[-1] - s[-3]
     accel = (s[-1] - s[-2]) > (s[-2] - s[-3])
-    return (s[-1] > 0.20 and slope > 0.08 and accel and s[-1] > e[-1] * 0.6), {"stress_slope": slope, "stress_accel": accel}
+    is_triggered = (s[-1] > 0.20 and slope > 0.08 and accel and s[-1] > e[-1] * 0.6)
+    return is_triggered, {"stress_slope": slope, "stress_accel": accel, "stress_val": s[-1], "exp_val": e[-1]}
 
+# --- CIS CONTEXT LOGIC ---
+def cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg, term_spread):
+    if rpv['STRESS'] > 0.20:
+        return "Low CIS due to rising stress probability"
+    if pre_stress or drift['STRESS'] > 0.08:
+        return "Low CIS due to accelerating stress drift"
+    if std_pct > -0.10:
+        return "Low CIS due to stalled straddle decay"
+    if iv_chg > 0.25:
+        return "Low CIS due to front-month IV repricing"
+    if term_spread < 0:
+        return "Low CIS due to term structure erosion"
+    return "Carry structure stable"
+
+# --- CARRY BAND LOGIC (FIXED) ---
+def carry_permission_band(cis):
+    if cis > 0.35:
+        return "FULL CARRY", "#28a745"
+    if cis > 0.15:
+        return "CONTROLLED CARRY", "#ffc107"
+    if cis > -0.05:
+        return "TOLERANCE ONLY", "#fd7e14"  # ORANGE
+    return "NO CARRY", "#dc3545"          # RED
+
+# --- CIS ENGINE ---
 def compute_cis_score(rpv, drift, stress_accel, std_pct, m1, m2):
     return np.clip(0.40*(rpv['COMPRESSION']+rpv['TRANSITION']) + 0.20*np.clip(-std_pct/0.25, -1, 1) + 0.15*np.clip((m2-m1)/1.0, -1, 1) - 0.50*rpv['STRESS'] - 0.30*np.clip(drift['STRESS']/0.10, 0, 1) - 0.20*(1.0 if stress_accel else 0.0), -1, 1)
 
-def get_cis_status(score):
-    if score > 0.35: return "SAFE", "#28a745"
-    if score > 0.15: return "CAUTION", "#ffc107"
-    if score > 0.0: return "DEFENSIVE", "#fd7e14"
-    if score > -0.25: return "EXIT BIAS", "#dc3545"
-    return "IMMEDIATE EXIT", "#dc3545"
+# REMOVED OLD get_cis_status TO AVOID CONFUSION
+
+# --- CPS ENGINE (UPDATED: DUAL LAYER) ---
+def compute_cps_score(rpv, std_pct, skew_accel_bool, m1, m2, m3):
+    struct = 0.40 * (rpv['EXPANSION'] + rpv['STRESS'])
+    gamma_hat = 0.25 * np.clip(std_pct / 0.30, -1, 1)
+    term_hat = 0.15 * np.clip(-(m3 - m1)/1.0, 0, 1)
+    lag_convexity = 0.10 * np.clip((m2 - m1) / 0.8, -1, 1)
+    accel_hat = 0.10 * (1.0 if skew_accel_bool else 0.0)
+    cps = struct + gamma_hat + term_hat + lag_convexity + accel_hat
+    return np.clip(cps, -1, 0.8)
+
+def get_cps_status(score):
+    if score > 0.40: return "CONVEXITY PERMITTED", "#28a745"
+    if score > 0.15: return "SELECTIVE", "#ffc107"
+    if score > -0.15: return "NEUTRAL", "#888"
+    return "EXPENSIVE", "#dc3545"
+
+# --- METRICS: DECAY & DIVERGENCE ---
+def permission_decay_meter(cis_series):
+    if len(cis_series) < 4: return 0.0
+    delta = cis_series[-1] - cis_series[-4]
+    decay = np.clip(-delta / 0.15, 0, 1) 
+    return decay
+
+def get_decay_status(decay):
+    if decay < 0.25: return "#28a745", "STABLE"
+    if decay < 0.5: return "#ffc107", "DECAYING"
+    if decay < 0.75: return "#fd7e14", "DANGEROUS"
+    return "#dc3545", "EXIT ZONE"
+
+def check_cis_divergence(cis, cis_prev, std_pct, vrp, rpv, rpv_prev):
+    if std_pct < -0.15 and cis < cis_prev: return "⚠️ PERMISSION DECAY (Theta Trap)", "#ffc107"
+    stress_delta = abs(rpv['STRESS'] - rpv_prev['STRESS'])
+    if stress_delta < 0.03 and (cis - cis_prev) < -0.1: return "⚠️ STRUCTURAL ROT (Hidden Risk)", "#fd7e14"
+    if vrp > 0 and cis < 0: return "🚨 EDGE MIRAGE (Convexity Risk)", "#dc3545"
+    if cis > 0.25 and (rpv['EXPANSION'] + rpv['STRESS']) > 0.6: return "🚨 SYSTEM CONFLICT (Data Error)", "#dc3545"
+    return None, None
+
+# --- PLOT CIS/CPS TREND ---
+def plot_cis_cps_trend(df):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cis'], mode='lines+markers', name='CIS (Carry)', line=dict(color='#00d1b2', width=2)))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cps'], mode='lines+markers', name='CPS (Convexity)', line=dict(color='#e67e22', width=2, dash='dot')))
+    fig.add_hline(y=0, line_dash='dash', line_color='#666')
+    fig.update_layout(title="<b>CIS vs CPS — Permission Regimes</b>", template="plotly_dark", height=280, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[-1, 1], title="Permission"), legend=dict(orientation="h", y=1.1))
+    return fig
 
 def run_engine_live(df):
     df_c = df.sort_values('timestamp', ascending=True).copy()
     if len(df_c) < 5: return None, None, df_c.iloc[-1]
-    curr, prev, prev2 = df_c.iloc[-1], df_c.iloc[-2], df_c.iloc[-3]
+    
+    # MODIFICATION: Rolling 5-Day RV for VRP
+    df_c['log_ret'] = np.log(df_c['spot_price'] / df_c['spot_price'].shift(1))
+    df_c['rv_5d'] = df_c['log_ret'].rolling(window=5).std() * np.sqrt(252) * 100
+    
+    # 1. HISTORICAL CALCULATION (CIS & CPS)
+    history_data = []
+    hist_window = df_c.tail(60)
+    
+    for i in range(3, len(hist_window)): 
+        _c, _p, _p2, _p3 = hist_window.iloc[i], hist_window.iloc[i-1], hist_window.iloc[i-2], hist_window.iloc[i-3]
+        _rpv, _ = compute_rpv(_c, _p, _p2)
+        _std_pct = ((_c['m1_straddle'] - _p['m1_straddle']) / _p['m1_straddle']) * 100
+        _cis = compute_cis_score(_rpv, {'STRESS':0}, False, _std_pct, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']))
+        _skew_accel = (_c['skew_index'] - _p['skew_index']) > (_p['skew_index'] - _p2['skew_index'])
+        _cps = compute_cps_score(_rpv, _std_pct, _skew_accel, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']), _c['m3_iv'])
+        history_data.append({'timestamp': _c['timestamp'], 'cis': _cis, 'cps': _cps, 'rpv': _rpv})
+        
+    df_hist = pd.DataFrame(history_data)
+
+    # 2. CURRENT CALCULATIONS
+    curr, prev, prev2, prev3 = df_c.iloc[-1], df_c.iloc[-2], df_c.iloc[-3], df_c.iloc[-4]
     rpv, lhs = compute_rpv(curr, prev, prev2)
     dom = max(rpv, key=rpv.get)
     colors = {"COMPRESSION": "#28a745", "TRANSITION": "#ffc107", "EXPANSION": "#fd7e14", "STRESS": "#dc3545"}
     
-    rpv_hist = compute_rpv_series(df_c.tail(15))
-    drift = compute_rpv_drift(rpv_hist)
-    pre_stress, ps_det = detect_pre_stress(rpv_hist)
+    rpv_hist_short = compute_rpv_series(df_c.tail(15))
+    drift = compute_rpv_drift(rpv_hist_short)
+    pre_stress, ps_det = detect_pre_stress(rpv_hist_short)
     
     std_pct = ((curr['m1_straddle'] - prev['m1_straddle']) / prev['m1_straddle']) * 100
-    cis = compute_cis_score(rpv, drift, pre_stress, std_pct, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']))
+    skew_accel_bool = (curr['skew_index'] - prev['skew_index']) > (prev['skew_index'] - prev2['skew_index'])
     
-    # Delta
-    cis_delta = 0.0
-    if len(rpv_hist) >= 4:
-        prev_cis = compute_cis_score(rpv_hist.iloc[-4], compute_rpv_drift(rpv_hist.iloc[:-3]), detect_pre_stress(rpv_hist.iloc[:-3])[0], 
-                                     ((df_c.iloc[-4]['m1_straddle'] - df_c.iloc[-5]['m1_straddle']) / df_c.iloc[-5]['m1_straddle']) * 100, 
-                                     df_c.iloc[-4]['m1_iv'], df_c.iloc[-4].get('m2_iv', df_c.iloc[-4]['m1_iv']))
-        cis_delta = cis - prev_cis
+    cis = compute_cis_score(rpv, drift, pre_stress, std_pct, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']))
+    cps = compute_cps_score(rpv, std_pct, skew_accel_bool, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']), curr['m3_iv'])
+    
+    if not df_hist.empty and cis != df_hist.iloc[-1]['cis']:
+         new_row = pd.DataFrame([{'timestamp': curr['timestamp'], 'cis': cis, 'cps': cps, 'rpv': rpv}])
+         df_hist = pd.concat([df_hist, new_row], ignore_index=True)
 
+    # 3. METRICS
+    cis_vals = df_hist['cis'].values
+    decay_val = permission_decay_meter(cis_vals)
+    decay_color, decay_label = get_decay_status(decay_val)
+    
+    prev_cis_val = cis_vals[-2] if len(cis_vals) > 1 else cis
+    prev_rpv = df_hist.iloc[-2]['rpv'] if len(df_hist) > 1 else rpv
+    
+    vrp_proxy = curr['m1_iv'] - curr.get('rv_5d', 0)
+    div_msg, div_col = check_cis_divergence(cis, prev_cis_val, std_pct, vrp_proxy, rpv, prev_rpv)
+
+    cis_delta = cis - prev_cis_val
+    
     dte = curr.get('m1_dte', 30)
     signals = {
         't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
@@ -200,20 +390,28 @@ def run_engine_live(df):
         't5': (curr['skew_index'] - prev['skew_index'] > 0.3, "RISING" if curr['skew_index'] - prev['skew_index'] > 0.3 else "FLAT", f"{curr['skew_index'] - prev['skew_index']:+.2f}"), 
     }
     
-    cycle = {
-        "entry": ("✅ SAFE", "#28a745") if (cis >= 0.15) and (rpv['COMPRESSION'] + rpv['TRANSITION'] >= 0.55) else ("🛑 NO ENTRY", "#dc3545"),
-        "harvest": ("⚠️ CAUTION", "#ffc107") if (drift['STRESS'] > 0.05) or (rpv['STRESS'] > 0.15) else ("✅ STABLE", "#28a745"),
-        "exit": ("🚨 EXIT NOW", "#dc3545") if (cis < 0) or (rpv['STRESS'] >= 0.25) or pre_stress else ("HOLD", "#888")
-    }
+    # Calculate vars for Context Logic
+    iv_chg_val = curr['m1_iv'] - prev['m1_iv']
+    term_spread_val = curr.get('m2_iv', curr['m1_iv']) - curr['m1_iv']
+
+    # New Context Logic Call
+    context_label = cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg_val, term_spread_val)
     
+    # *** FIX: Use correct function and capture color ***
+    band_label, band_color = carry_permission_band(cis)
+
     ctx = {
         'regime': dom, 'color': colors.get(dom, "#888"), 'confidence': "HIGH" if rpv[dom] > 0.55 else "MEDIUM",
         'rpv': rpv, 'risk': derive_risk_posture(rpv), 'drivers': [k for k,v in lhs.items() if v[dom]>0.6], 'counterforces': [k for k,v in lhs.items() if v[dom]<0.3],
-        'is_roll': dte >= 28, 'is_late': dte <= 7, 'dte': dte, 'cycle': cycle,
-        'cis': {'score': cis, 'label': get_cis_status(cis)[0], 'color': get_cis_status(cis)[1], 'delta': cis_delta},
-        'entry_bool': (cis >= 0.15) and (rpv['COMPRESSION'] + rpv['TRANSITION'] >= 0.55),
-        'harvest_bool': (drift['STRESS'] > 0.05) or (rpv['STRESS'] > 0.15),
-        'exit_bool': (cis < 0) or (rpv['STRESS'] >= 0.25) or pre_stress
+        'is_roll': dte >= 28, 'is_late': dte <= 7, 'dte': dte, 
+        'cis': {'score': cis, 'label': band_label, 'color': band_color, 'delta': cis_delta, 'context': context_label},
+        'cps': {'score': cps, 'label': get_cps_status(cps)[0], 'color': get_cps_status(cps)[1]},
+        'decay': {'val': decay_val, 'label': decay_label, 'color': decay_color},
+        'divergence': {'msg': div_msg, 'color': div_col},
+        'history': df_hist,
+        'drift': drift,
+        'pre_stress': pre_stress,
+        'ps_det': ps_det
     }
     return signals, ctx, curr
 
@@ -240,87 +438,122 @@ def calculate_historical_regime(df):
 # --- DASHBOARD RENDERER ---
 def render_dashboard(df_selected, signals, ctx, curr, df_all):
     cis = ctx['cis']
+    cps = ctx['cps']
+    decay = ctx['decay']
+    div = ctx['divergence']
+    drift = ctx['drift']
+    pre_stress = ctx['pre_stress']
+    
     arrow = "<span class='delta-arrow' style='color: #28a745;'>↑</span>" if cis['delta'] > 0.001 else "<span class='delta-arrow' style='color: #dc3545;'>↓</span>" if cis['delta'] < -0.001 else ""
     
-    st.markdown(f"""
-    <div class="exec-box" style="border-color: {cis['color']};">
-        <div><div style="font-size: 14px; color: #888;">EXECUTIVE COMMAND</div><div class="status-badge" style="background-color: {cis['color']};">{cis['label']}</div></div>
-        <div style="text-align: right;"><div style="font-size: 14px; color: #888;">CARRY INTEGRITY SCORE</div><div class="cis-score">{cis['score']*100:.0f}% {arrow}</div></div>
+    # 1. Executive Command (UPDATED WITH NEW BANDS & CONTEXT)
+    st.markdown(f"""<div class="exec-box" style="border-color: {cis['color']};">
+    <div style="flex: 1;">
+        <div style="font-size: 11px; color: #888; font-weight:bold;">CARRY PERMISSION</div>
+        <div class="status-badge" style="background-color: {cis['color']};">{cis['label']}</div>
+        <div class="cis-score">{cis['score']*100:.0f}% {arrow}</div>
+        <div class="cis-context">{cis['context']}</div>
     </div>
-    """, unsafe_allow_html=True)
-
-    # RPV Banner
-    st.markdown(f"""
-    <div class="regime-box" style="background-color: {ctx['color']}15; border-color: {ctx['color']}80;">
-        <div style="text-align: center; font-size: 11px; color: #888; letter-spacing: 1px;">MARKET STRUCTURE</div>
-        <div class="regime-label" style="color: {ctx['color']};">{ctx['regime']} <span style='font-size: 12px; color: #aaa'>({ctx['confidence']})</span></div>
-        <div class="rpv-bar">
-            <div style="width: {ctx['rpv']['COMPRESSION']*100}%; background: #28a745;"></div>
-            <div style="width: {ctx['rpv']['TRANSITION']*100}%; background: #ffc107;"></div>
-            <div style="width: {ctx['rpv']['EXPANSION']*100}%; background: #fd7e14;"></div>
-            <div style="width: {ctx['rpv']['STRESS']*100}%; background: #dc3545;"></div>
+    <div class="perm-meter"> 
+        <div style="font-size: 11px; color: #888; font-weight:bold;">DECAY METER</div>
+        <div style="font-size: 18px; font-weight: 900; color:{decay['color']};">
+            {decay['label']} ({decay['val']:.2f})
         </div>
     </div>
-    """, unsafe_allow_html=True)
-
-    # Cycle Logic UI
-    c = ctx['cycle']
-    p1 = "<span class='cycle-highlight'>Edge > 55%</span>" if ctx['entry_bool'] else "<span class='cycle-dim'>Edge Low</span>"
-    p2 = "<span class='cycle-highlight' style='color:#ffc107'>Drift > 0.05</span>" if ctx['harvest_bool'] else "<span class='cycle-dim'>Stable</span>"
-    p3 = "<span class='cycle-highlight' style='color:#dc3545'>Stress > 0.25</span>" if ctx['exit_bool'] else "<span class='cycle-dim'>Safe</span>"
-
-    st.markdown(f"""
-    <div style="margin-bottom: 25px; padding: 15px; background: #161b22; border: 1px solid #444; border-radius: 8px;">
-        <div style="display: flex; gap: 15px;">
-            <div style="flex: 1; text-align: center; padding: 10px; background: #222; border-radius: 6px;">
-                <div style="font-size: 11px; color: #888;">ENTRY</div><div style="font-size: 16px; font-weight: bold; color: {c['entry'][1]};">{c['entry'][0]}</div><div style="font-size: 10px; color: #aaa;">{p1}</div>
-            </div>
-            <div style="flex: 1; text-align: center; padding: 10px; background: #222; border-radius: 6px;">
-                <div style="font-size: 11px; color: #888;">HARVEST</div><div style="font-size: 16px; font-weight: bold; color: {c['harvest'][1]};">{c['harvest'][0]}</div><div style="font-size: 10px; color: #aaa;">{p2}</div>
-            </div>
-            <div style="flex: 1; text-align: center; padding: 10px; background: #222; border-radius: 6px;">
-                <div style="font-size: 11px; color: #888;">EXIT</div><div style="font-size: 16px; font-weight: bold; color: {c['exit'][1]};">{c['exit'][0]}</div><div style="font-size: 10px; color: #aaa;">{p3}</div>
-            </div>
-        </div>
+    <div style="flex: 1; text-align: right; padding-left: 20px;">
+        <div style="font-size: 11px; color: #888; font-weight:bold;">CONVEXITY PERMISSION</div>
+        <div class="status-badge" style="background-color: {cps['color']};">{cps['label']}</div>
+        <div class="cis-score" style="justify-content: flex-end; color: #e67e22;">{cps['score']*100:.0f}%</div>
     </div>
-    """, unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
+    # 2. Market Structure
+    p_comp = int(ctx['rpv']['COMPRESSION'] * 100)
+    p_tran = int(ctx['rpv']['TRANSITION'] * 100)
+    p_expa = int(ctx['rpv']['EXPANSION'] * 100)
+    p_strs = int(ctx['rpv']['STRESS'] * 100)
+
+    st.markdown(f"""<div class="regime-box" style="background-color: {ctx['color']}15; border-color: {ctx['color']}80;">
+    <div style="text-align: center; font-size: 11px; color: #888; letter-spacing: 1px;">MARKET STRUCTURE</div>
+    <div class="regime-label" style="color: {ctx['color']};">{ctx['regime']} <span style='font-size: 12px; color: #aaa'>({ctx['confidence']})</span></div>
+    <div class="rpv-bar">
+        <div style="width: {ctx['rpv']['COMPRESSION']*100}%; background: #28a745;"></div>
+        <div style="width: {ctx['rpv']['TRANSITION']*100}%; background: #ffc107;"></div>
+        <div style="width: {ctx['rpv']['EXPANSION']*100}%; background: #fd7e14;"></div>
+        <div style="width: {ctx['rpv']['STRESS']*100}%; background: #dc3545;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; font-family: monospace; font-weight: bold;">
+        <div style="color: #28a745;">COMP: {p_comp}%</div>
+        <div style="color: #ffc107;">TRAN: {p_tran}%</div>
+        <div style="color: #fd7e14;">EXPA: {p_expa}%</div>
+        <div style="color: #dc3545;">STRS: {p_strs}%</div>
+    </div>
+</div>""", unsafe_allow_html=True)
+
+    # 4. Divergence Warning
+    if div['msg']:
+        st.markdown(f"""<div class="div-warning" style="background-color: {div['color']}20; border-color: {div['color']}; color: {div['color']};">{div['msg']}</div>""", unsafe_allow_html=True)
+
+    # 6. Signals
     c1, c2, c3, c4 = st.columns(4)
     with c1: s=signals['t1']; render_tile("FRONT STRESS (M1)", s[0], s[1], s[2])
     with c2: s=signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2])
     with c3: s=signals['t4']; render_tile("CARRY INSULATION", s[0], s[1], s[2], True)
     with c4: s=signals['t5']; render_tile("HEDGING PRESSURE", s[0], s[1], s[2])
-
     st.markdown(f"""<div class="mini-diag"><span>SPOT: {curr['spot_price']:.0f}</span><span>ATM IV: {curr['m1_iv']:.2f}%</span><span>STRADDLE: {curr['m1_straddle']:.0f}</span><span>DTE: {ctx['dte']}</span></div>""", unsafe_allow_html=True)
 
-    # --- ANALYTICS SECTION ---
-    st.markdown('<div class="section-header">📊 Analytics</div>', unsafe_allow_html=True)
+    # --- REGIME DYNAMICS (NEW SECTION) ---
+    st.markdown('<div class="section-header">🔍 Regime Dynamics & Stability</div>', unsafe_allow_html=True)
     
-    df_chart = df_selected.sort_values('timestamp').tail(60)
+    # Pre-Stress Status
+    ps_status = "<span class='ps-status-danger'>⚠️ TRIGGERED</span>" if pre_stress else "<span class='ps-status-safe'>✅ SAFE</span>"
+    ps_msg = "WARNING: TAIL RISK > 60% OF EXPANSION" if pre_stress else "System Stable. No immediate crash precursors."
     
-    # 1. Regime Timeline
-    df_regime = calculate_historical_regime(df_chart)
-    if not df_regime.empty:
-        df_regime['y_val'] = 1
-        fig_regime = px.scatter(df_regime, x="timestamp", y="y_val", color="regime", 
-                            color_discrete_map={
-                                "COMPRESSION": "#28a745", "TRANSITION": "#ffc107", 
-                                "EXPANSION": "#fd7e14", "STRESS": "#dc3545"
-                            },
-                            symbol_sequence=['square'], title="<b>Regime Timeline</b>")
-        fig_regime.update_traces(marker=dict(size=15))
-        fig_regime.update_layout(template="plotly_dark", height=130, showlegend=False, 
-                               yaxis=dict(visible=False), xaxis=dict(showgrid=False), margin=dict(t=30, b=10))
-        st.plotly_chart(fig_regime, width="stretch")
+    # Drift formatting helper
+    def fmt_drift(val):
+        sym = "↑" if val > 0 else "↓" if val < 0 else "−"
+        c = "#28a745" if val > 0.05 else "#dc3545" if val < -0.05 else "#888"
+        if val > 0.1: c = "#00e676" # strong positive
+        return f"<span style='color:{c}; font-weight:bold;'>{sym} {abs(val):.2f}</span>"
 
-    # 2. Spot vs Straddle Chart
+    # FLUSH LEFT HTML BLOCK TO FIX INDENTATION BUG
+    st.markdown(textwrap.dedent(f"""
+    <div class="dynamics-console">
+        <div class="ps-panel">
+            <div class="dynamics-title">PRE-STRESS DETECTOR</div>
+            <div class="ps-status">{ps_status}</div>
+            <div class="ps-metrics">
+                <div>Slope: {ctx['ps_det']['stress_slope']:.2f}</div>
+                <div>Accel: {ctx['ps_det']['stress_accel']}</div>
+                <div style="margin-top:4px; font-style:italic;">{ps_msg}</div>
+            </div>
+        </div>
+        <div class="drift-grid">
+            <div class="drift-item"><div class="drift-label">COMP DRIFT</div><div class="drift-val">{fmt_drift(drift['COMPRESSION'])}</div></div>
+            <div class="drift-item"><div class="drift-label">TRAN DRIFT</div><div class="drift-val">{fmt_drift(drift['TRANSITION'])}</div></div>
+            <div class="drift-item"><div class="drift-label">EXPA DRIFT</div><div class="drift-val">{fmt_drift(drift['EXPANSION'])}</div></div>
+            <div class="drift-item"><div class="drift-label">STRS DRIFT</div><div class="drift-val">{fmt_drift(drift['STRESS'])}</div></div>
+        </div>
+    </div>
+    """), unsafe_allow_html=True)
+
+    # --- ANALYTICS ---
+    st.markdown('<div class="section-header">📊 Analytics</div>', unsafe_allow_html=True)
+    df_chart = df_selected.sort_values('timestamp').tail(60)
+
+    # 1. Spot vs Straddle
     fig_spot = make_subplots(specs=[[{"secondary_y": True}]])
     fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['spot_price'], line=dict(color='#3498db', width=2), name="Spot"), secondary_y=False)
     fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['m1_straddle'], line=dict(color='#e74c3c', width=2, dash='dot'), name="Straddle"), secondary_y=True)
     fig_spot.update_layout(title="<b>Nifty Spot vs ATM Straddle Price Trend</b>", template="plotly_dark", height=350, margin=dict(t=20, b=20, l=20, r=20), legend=dict(orientation="h", y=1.1))
     st.plotly_chart(fig_spot, width="stretch")
 
-    # 3. Regime Probabilities Stacked Area
+    # 2. CIS vs CPS TREND
+    if not ctx['history'].empty:
+        fig_trend = plot_cis_cps_trend(ctx['history'])
+        st.plotly_chart(fig_trend, width="stretch")
+
+    # 3. Regime Probabilities
     rpv_full_hist = get_full_rpv_history(df_selected.tail(60))
     if not rpv_full_hist.empty:
         fig_rpv = go.Figure()
@@ -328,13 +561,13 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['EXPANSION'], mode='lines', stackgroup='one', name='EXPANSION', line=dict(color='#fd7e14', width=0)))
         fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['TRANSITION'], mode='lines', stackgroup='one', name='TRANSITION', line=dict(color='#ffc107', width=0)))
         fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['COMPRESSION'], mode='lines', stackgroup='one', name='COMPRESSION', line=dict(color='#28a745', width=0)))
-        
         fig_rpv.update_layout(title="<b>Regime Probabilities Over Time (2 Months)</b>", template="plotly_dark", height=300, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[0, 1]), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig_rpv, width="stretch")
 
-    # 4. Metrics Charts (Slope, Std Pct, VRP, Skew)
+    # 4. Metric Charts
     df_hist = df_chart.copy()
-    df_hist['slope'] = df_hist['m3_iv'] - df_hist['m1_iv']
+    # MODIFICATION: M2 - M1
+    df_hist['slope'] = df_hist['m2_iv'] - df_hist['m1_iv']
     df_hist['slope_col'] = np.where(df_hist['slope'] >= 0, '#00cc00', '#ff0000')
     df_hist['std_pct'] = df_hist['m1_straddle'].pct_change() * 100
     df_hist['std_col'] = np.where(df_hist['std_pct'] <= 0, '#00cc00', '#ff0000') 
@@ -343,32 +576,33 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     df_hist['vrp'] = df_hist['m1_iv'] - df_hist['rv_5d']
     df_hist['vrp_col'] = np.where(df_hist['vrp'] > 0, '#00cc00', '#ff0000') 
 
-    col_r1_1, col_r1_2 = st.columns(2)
-    with col_r1_1:
+    c1, c2 = st.columns(2)
+    with c1:
         fig_slope = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['slope'], marker_color=df_hist['slope_col']))
-        fig_slope.update_layout(title="<b>Term Structure Slope</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        fig_slope.update_layout(title="<b>Near Term Structure (M2-M1)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_slope, width="stretch")
-    with col_r1_2:
+    with c2:
         fig_std = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['std_pct'], marker_color=df_hist['std_col']))
         fig_std.update_layout(title="<b>Daily Straddle Change %</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_std, width="stretch")
 
-    col_r2_1, col_r2_2 = st.columns(2)
-    with col_r2_1:
+    c3, c4 = st.columns(2)
+    with c3:
         fig_vrp = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['vrp'], marker_color=df_hist['vrp_col']))
         fig_vrp.update_layout(title="<b>VRP Index (Edge)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_vrp, width="stretch")
-    with col_r2_2:
+    with c4:
         fig_skew = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['skew_index'], mode='lines', line=dict(color='#3498db', width=2), fill='tozeroy'))
         fig_skew.update_layout(title="<b>Skew Index</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_skew, width="stretch")
 
-    col_r3_1, col_r3_2 = st.columns(2)
-    with col_r3_1:
+    # 5. Missing Charts Re-added
+    c5, c6 = st.columns(2)
+    with c5:
         fig_vvix = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['india_vix'], mode='lines', line=dict(color='#f1c40f', width=2)))
         fig_vvix.update_layout(title="<b>INDIA VIX</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_vvix, width="stretch")
-    with col_r3_2:
+    with c6:
         fig_sd = go.Figure()
         daily_iv = (df_hist['m1_iv'] / 100) / np.sqrt(252)
         spot_pct = df_hist['spot_price'].pct_change()
