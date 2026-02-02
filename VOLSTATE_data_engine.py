@@ -19,6 +19,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -113,7 +114,7 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
     logger.info("   -> Checking Scrape Permission (Visual & Date)...")
     try:
         driver.get(HOME_URL)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
         # 1. Check for explicit "Open" text
@@ -124,7 +125,6 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
                 return True
 
         # 2. Check for Today's Date in header (indicates fresh EOD data)
-        # Regex for dates like "02-Feb-2026"
         date_pattern = r"(\d{2}-[A-Za-z]{3}-\d{4})"
         matches = re.findall(date_pattern, page_text)
         today_str = datetime.now().strftime("%d-%b-%Y")
@@ -142,14 +142,14 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
              return True
 
         if "Normal Market has Closed" in page_text:
-            logger.warning(f"   ⛔ Market Closed and no fresh data for {today_str} found.")
-            return False
+            logger.warning(f"   ⛔ Market Closed. Checking for data anyway...")
+            return True # CHANGED: Allow scrape even if closed, assuming EOD data is present
 
         logger.warning("   ⚠️ No Open status OR Today's date found.")
-        return False
+        return True # CHANGED: Fallback to True to attempt scrape anyway
     except Exception as e:
         logger.error(f"   ❌ Scrape Check Failed: {e}")
-        return False
+        return True # FAILSAFE: Try to scrape anyway
 
 def check_live_holiday(driver: webdriver.Chrome) -> bool:
     try:
@@ -184,12 +184,31 @@ def get_india_vix_nse(driver: webdriver.Chrome) -> float:
     return 0.00
 
 def find_expiry_dropdown(driver: webdriver.Chrome):
+    """
+    Robustly finds the expiry dropdown using specific ID first, then fallback to Select tag.
+    """
     try:
-        WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "select")))
-        for sel in driver.find_elements(By.TAG_NAME, "select"):
-            if str(datetime.now().year) in sel.text: return sel
+        # 1. Try Specific ID used by NSE
+        try:
+            dropdown = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.ID, "select_opt_expiry_date"))
+            )
+            return dropdown
+        except:
+            logger.info("   ⚠️ ID 'select_opt_expiry_date' not found. Trying fallback...")
+
+        # 2. Fallback: Find valid select element
+        selects = driver.find_elements(By.TAG_NAME, "select")
+        current_year = str(datetime.now().year)
+        for sel in selects:
+            # Check if it contains relevant year options
+            if current_year in sel.text:
+                return sel
+        
         return None
-    except: return None
+    except Exception as e:
+        logger.error(f"   ❌ Dropdown search error: {e}")
+        return None
 
 def get_monthly_expiries(driver: webdriver.Chrome, dropdown_element) -> Optional[List[Tuple]]:
     try:
@@ -208,23 +227,29 @@ def get_monthly_expiries(driver: webdriver.Chrome, dropdown_element) -> Optional
         for d_obj, val in date_map:
             month_groups.setdefault((d_obj.year, d_obj.month), []).append((d_obj, val))
         
+        # Return the last expiry (monthly) for the next 3 months
         return [month_groups[k][-1] for k in sorted(month_groups.keys())][:3]
     except: return None
 
 def switch_expiry(driver: webdriver.Chrome, dropdown, value: str) -> bool:
     try:
-        old_src = driver.page_source
-        driver.execute_script("var s=arguments[0]; var v=arguments[1]; s.value=v; s.dispatchEvent(new Event('change', {bubbles:true}));", dropdown, value)
-        for _ in range(10):
-            time.sleep(1)
-            if driver.page_source != old_src: return True
-        return False
+        # Trigger change event via JS
+        driver.execute_script("arguments[0].value = arguments[1];", dropdown, value)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", dropdown)
+        
+        # Wait for loading overlay to disappear if present
+        try:
+            WebDriverWait(driver, 2).until(EC.invisibility_of_element_located((By.CLASS_NAME, "loader")))
+        except: pass
+        
+        time.sleep(3) # Hard wait for table refresh
+        return True
     except: return False
 
 def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
     try:
         # Wait for table to ensure page loaded
-        try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
+        try: WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except: pass
 
         spot = 0.0
@@ -257,8 +282,12 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
             raise Exception("Spot Price Validation Failed")
 
         # --- TABLE PARSING ---
-        dfs = pd.read_html(io.StringIO(driver.page_source))
-        if not dfs: raise Exception("No tables")
+        try:
+            dfs = pd.read_html(io.StringIO(driver.page_source))
+        except ValueError:
+             raise Exception("No tables found in page source")
+             
+        if not dfs: raise Exception("No tables parsed")
         
         df = next((d for d in dfs if d.shape[0] > 10 and d.shape[1] > 10), None)
         if df is None: raise Exception("Chain table not found")
@@ -281,7 +310,7 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
         
         atm = df_sorted.iloc[0]
         def safe(v):
-            try: return float(v) if v!='-' else 0.0
+            try: return float(v) if str(v).strip() != '-' else 0.0
             except: return 0.0
 
         straddle = safe(atm[ltp_cols[0]]) + safe(atm[ltp_cols[1]])
@@ -364,6 +393,7 @@ def update_market_data():
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--start-maximized")
     options.add_argument("--ignore-certificate-errors")
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -381,30 +411,34 @@ def update_market_data():
     try:
         can_scrape = check_scrape_permission(driver)
         
-        if can_scrape:
-            logger.info("✅ Permission Granted. Proceeding with scraping.")
-        else:
-            if check_live_holiday(driver):
+        # Even if permission fails, we log it but continue as a failsafe
+        if not can_scrape:
+             if check_live_holiday(driver):
                 logger.info("🚫 Market is CLOSED (Holiday). Stopping.")
                 driver.quit()
                 return
-            if datetime.now().weekday() >= 5:
-                logger.info("🚫 Market is CLOSED (Weekend + No Fresh Data). Stopping.")
-                driver.quit()
-                return
-            logger.warning("⚠️ Permission failed, but attempting scrape as failsafe...")
-        
+
         logger.info("   -> Initializing Session...")
         driver.get(HOME_URL)
         time.sleep(5)
         
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
-        time.sleep(10)
+        
+        # Explicit wait for the main table container
+        try:
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
+        except TimeoutException:
+            logger.error("❌ TIMEOUT: Option chain table did not load.")
+            return
+
+        time.sleep(5) # Additional buffer
 
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
-            logger.error("❌ Expiry Dropdown not found.")
+            logger.error("❌ Expiry Dropdown not found (FATAL).")
+            # Log page source snippet for debugging if needed
+            # logger.error(driver.page_source[:1000]) 
             return
 
         expiries = get_monthly_expiries(driver, dropdown)
@@ -422,26 +456,28 @@ def update_market_data():
             if label == "m1":
                 m1_month_str = date_obj.strftime("%b")
 
+            # Re-find dropdown to avoid StaleElementReferenceException
             dropdown = find_expiry_dropdown(driver)
-            switch_expiry(driver, dropdown, val)
-            row_data = scrape_table_data(driver)
-            
-            if row_data:
-                if label == "m1":
-                    live_data.update({
-                        'spot_price': row_data['spot'],
-                        'm1_straddle': row_data['straddle'],
-                        'm1_call_iv': row_data['m1_call_iv'],
-                        'm1_put_iv': row_data['m1_put_iv'],
-                        'm1_iv': row_data['m1_iv'],
-                        'skew_index': row_data['skew_index'],
-                        'skew_put_avg_9_10_11_iv': row_data['skew_put_avg_9_10_11_iv'],
-                        'skew_call_avg_9_10_11_iv': row_data['skew_call_avg_9_10_11_iv']
-                    })
-                elif label == "m2": live_data['m2_iv'] = row_data['m1_iv'] 
-                elif label == "m3": live_data['m3_iv'] = row_data['m1_iv']
+            if dropdown:
+                switch_expiry(driver, dropdown, val)
+                row_data = scrape_table_data(driver)
+                
+                if row_data:
+                    if label == "m1":
+                        live_data.update({
+                            'spot_price': row_data['spot'],
+                            'm1_straddle': row_data['straddle'],
+                            'm1_call_iv': row_data['m1_call_iv'],
+                            'm1_put_iv': row_data['m1_put_iv'],
+                            'm1_iv': row_data['m1_iv'],
+                            'skew_index': row_data['skew_index'],
+                            'skew_put_avg_9_10_11_iv': row_data['skew_put_avg_9_10_11_iv'],
+                            'skew_call_avg_9_10_11_iv': row_data['skew_call_avg_9_10_11_iv']
+                        })
+                    elif label == "m2": live_data['m2_iv'] = row_data['m1_iv'] 
+                    elif label == "m3": live_data['m3_iv'] = row_data['m1_iv']
             else:
-                logger.warning(f"       ⚠️ Failed to scrape {label}")
+                logger.error("❌ Dropdown lost during iteration.")
 
         live_data['india_vix'] = get_india_vix_nse(driver)
         live_data['m1_month'] = m1_month_str
@@ -450,6 +486,7 @@ def update_market_data():
             logger.error("❌ Scrape Failed: Spot Price is 0.")
             return
 
+        # Backfill missing far-month data
         if live_data.get('m3_iv', 0) == 0:
             if live_data.get('m2_iv', 0) > 0: live_data['m3_iv'] = live_data['m2_iv']
             elif live_data.get('m1_iv', 0) > 0: live_data['m3_iv'] = live_data['m1_iv']
