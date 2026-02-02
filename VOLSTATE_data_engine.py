@@ -1,502 +1,652 @@
+import streamlit as st
 import sqlite3
 import pandas as pd
 import numpy as np
-import time
-import re
-import io
-import json
-import logging
-import random
-from datetime import datetime
-from typing import Optional, Dict, List, Tuple
-from contextlib import contextmanager
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import textwrap
 
-# --- SELENIUM IMPORTS ---
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-# --- LOGGING SETUP ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
+# --- IMPORT DOCUMENTATION MODULE ---
+try:
+    from VOLSTATE_docs import render_documentation_tab
+except ImportError:
+    def render_documentation_tab():
+        st.error("VOLSTATE_docs.py not found. Please ensure the file exists in the same directory.")
 
 # --- CONFIG ---
-DB_NAME = "market_data.db"
-OPTION_CHAIN_URL = "https://www.nseindia.com/option-chain"
-INDICES_URL = "https://www.nseindia.com/market-data/live-market-indices"
-HOLIDAY_API_URL = "https://www.nseindia.com/api/holiday-master?type=trading"
-VIX_API_URL = "https://www.nseindia.com/api/allIndices"
-HOME_URL = "https://www.nseindia.com/"
+DB_NAME = "fake_market_data.db"
 
-# Validation ranges
-SPOT_PRICE_MIN = 15000
-SPOT_PRICE_MAX = 50000 
-VIX_MIN = 5.0
-VIX_MAX = 100.0
+st.set_page_config(
+    page_title="VOLSTATE System", 
+    layout="wide", 
+    page_icon="⚡",
+    initial_sidebar_state="collapsed"
+)
 
-# --- DATABASE FUNCTIONS ---
-@contextmanager
-def get_db_connection():
-    conn = sqlite3.connect(DB_NAME)
-    try:
-        yield conn
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error(f"Database error: {e}")
-        raise
-    finally:
-        conn.close()
-
-def migrate_db(conn):
-    c = conn.cursor()
-    c.execute("PRAGMA table_info(market_logs)")
-    columns = [info[1] for info in c.fetchall()]
+# --- CSS STYLING ---
+st.markdown("""
+    <style>
+    .main { font-family: 'Segoe UI', sans-serif; background-color: #0e1117; }
     
-    new_columns = {
-        'm1_call_iv': 'REAL',
-        'm1_put_iv': 'REAL',
-        'skew_put_avg_9_10_11_iv': 'REAL',
-        'skew_call_avg_9_10_11_iv': 'REAL',
-        'm1_month': 'TEXT',
-        'skew_index': 'REAL',
-        'm1_iv': 'REAL'
+    /* Tabs Styling */
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; justify-content: center; }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px; white-space: pre-wrap; background-color: #1e252e;
+        border-radius: 5px; color: #fff; font-weight: 600; font-size: 16px; flex: 1;
+    }
+    .stTabs [aria-selected="true"] { background-color: #ffc107; color: #000; }
+
+    /* Pills & Badges */
+    .pill { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold; color: #fff; display: inline-block; }
+    .pill-yellow { background-color: #ffc107; color: #000; }
+    .pill-red { background-color: #dc3545; }
+    .pill-orange { background-color: #fd7e14; }
+    .pill-gray { background-color: #444; opacity: 0.5; }
+    
+    /* Exec Box */
+    .exec-box { 
+        background-color: #1e252e; 
+        border: 2px solid #444; 
+        border-radius: 10px; 
+        padding: 20px; 
+        margin-bottom: 20px; 
+        display: flex; 
+        justify-content: space-around; 
+        align-items: center; 
+    }
+    .cis-score { font-size: 42px; font-weight: 900; color: #fff; line-height: 1; }
+    .status-badge { padding: 6px 12px; border-radius: 4px; font-weight: bold; font-size: 16px; text-transform: uppercase; color: #000; display: inline-block; }
+    .delta-arrow { font-size: 24px; font-weight: bold; }
+    .cis-context { font-size: 12px; color: #888; margin-top: 5px; font-style: italic; }
+
+    /* Permission Meter */
+    .perm-meter {
+        padding: 10px 15px; 
+        border-radius: 8px; 
+        background:#161b22; 
+        min-width: 160px;
+        text-align: center;
+    }
+
+    /* Divergence Warning Banner */
+    .div-warning {
+        padding: 12px;
+        border-radius: 6px;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 20px;
+        font-size: 16px;
+        border: 1px solid rgba(255,255,255,0.2);
+    }
+
+    /* Regime Box */
+    .regime-box { text-align: center; padding: 15px; border-radius: 12px; margin-bottom: 25px; border: 1px solid rgba(255, 255, 255, 0.1); background-color: rgba(255, 255, 255, 0.05); }
+    .regime-label { font-size: 24px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
+    
+    /* Tiles */
+    .grid-tile { background-color: #161b22; border: 1px solid #333; border-radius: 6px; padding: 15px; height: 110px; display: flex; flex-direction: column; justify-content: space-between; }
+    .tile-header { font-size: 13px; color: #888; text-transform: uppercase; font-weight: 600; }
+    .tile-value { font-size: 24px; font-weight: 800; margin: 2px 0; }
+    .tile-sub { font-size: 12px; font-family: monospace; color: #aaa; }
+    
+    /* Utility */
+    .text-green { color: #28a745; } .text-amber { color: #ffc107; } .text-red { color: #dc3545; } .text-gray { color: #888; }
+    .border-green { border-left: 4px solid #28a745; } .border-amber { border-left: 4px solid #ffc107; } .border-red { border-left: 4px solid #dc3545; } .border-gray { border-left: 4px solid #555; }
+    
+    .mini-diag { font-family: monospace; font-size: 12px; color: #666; border-top: 1px solid #333; margin-top: 20px; padding-top: 10px; display: flex; justify-content: space-around; }
+    .section-header { margin-top: 40px; margin-bottom: 15px; padding-bottom: 5px; border-bottom: 1px solid #333; font-size: 20px; font-weight: bold; color: #ddd;}
+    .rpv-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 10px; width: 100%; }
+    .stDateInput label { display: none; }
+    
+    /* DYNAMICS CONSOLE (VIBRANT UPDATE) */
+    .dynamics-console {
+        background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+        border: 1px solid #555;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 25px;
+        align-items: center;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    .dynamics-title {
+        font-size: 12px; color: #aaa; font-weight: bold; letter-spacing: 1.5px; margin-bottom: 8px; text-transform: uppercase;
     }
     
-    for col_name, col_type in new_columns.items():
-        if col_name not in columns:
-            logger.info(f"🛠️ Migrating DB: Adding column '{col_name}'...")
-            try: c.execute(f"ALTER TABLE market_logs ADD COLUMN {col_name} {col_type}")
-            except Exception as e: logger.error(f"Migration failed for {col_name}: {e}")
-
-def init_db():
-    with get_db_connection() as conn:
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS market_logs (
-                timestamp DATETIME PRIMARY KEY,
-                spot_price REAL NOT NULL,
-                m1_straddle REAL,
-                m1_call_iv REAL,
-                m1_put_iv REAL,
-                m1_iv REAL,
-                m2_iv REAL,
-                m3_iv REAL,
-                skew_put_avg_9_10_11_iv REAL,
-                skew_call_avg_9_10_11_iv REAL,
-                skew_index REAL,
-                india_vix REAL,
-                m1_month TEXT
-            )
-        ''')
-        migrate_db(conn)
-    logger.info(f"✅ Database {DB_NAME} checked/ready.")
-
-# --- UTILS ---
-def validate_spot_price(price: float) -> bool:
-    if not isinstance(price, (int, float)): return False
-    return SPOT_PRICE_MIN <= price <= SPOT_PRICE_MAX
-
-def validate_vix(vix: float) -> bool:
-    return isinstance(vix, (int, float)) and VIX_MIN <= vix <= VIX_MAX
-
-# --- SCRAPERS ---
-def check_scrape_permission(driver: webdriver.Chrome) -> bool:
-    logger.info("   -> Checking Scrape Permission (Visual & Date)...")
-    try:
-        driver.get(HOME_URL)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        page_text = driver.find_element(By.TAG_NAME, "body").text
-        
-        # 1. Check for explicit "Open" text
-        open_indicators = ["Normal Market is Open", "Market Status : Open", "Capital Market : Open", "NIFTY 50 : Open"]
-        for indicator in open_indicators:
-            if re.search(indicator, page_text, re.IGNORECASE):
-                logger.info(f"   ✅ Detected Status: '{indicator}' -> GO")
-                return True
-
-        # 2. Check for Today's Date in header (indicates fresh EOD data)
-        # Regex for dates like "02-Feb-2026"
-        date_pattern = r"(\d{2}-[A-Za-z]{3}-\d{4})"
-        matches = re.findall(date_pattern, page_text)
-        today_str = datetime.now().strftime("%d-%b-%Y")
-        
-        if matches:
-            for date_str in matches:
-                if date_str.lower() == today_str.lower():
-                    logger.info(f"   ✅ Detected Today's Date ({date_str}) in header -> GO")
-                    return True
-        
-        # Fallback numeric date check
-        today_num = datetime.now().strftime("%d-%m-%Y")
-        if today_num in page_text:
-             logger.info(f"   ✅ Detected Today's Date ({today_num}) -> GO")
-             return True
-
-        if "Normal Market has Closed" in page_text:
-            logger.warning(f"   ⛔ Market Closed and no fresh data for {today_str} found.")
-            return False
-
-        logger.warning("   ⚠️ No Open status OR Today's date found.")
-        return False
-    except Exception as e:
-        logger.error(f"   ❌ Scrape Check Failed: {e}")
-        return False
-
-def check_live_holiday(driver: webdriver.Chrome) -> bool:
-    try:
-        driver.get(HOLIDAY_API_URL)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        json_str = driver.find_element(By.TAG_NAME, "body").text
-        data = json.loads(json_str)
-        today_str = datetime.now().strftime("%d-%b-%Y")
-        for h in data.get('FO', []):
-            if h.get('tradingDate') == today_str:
-                logger.info(f"🚫 Today is a Trading Holiday: {h.get('description')}")
-                return True
-        return False
-    except: return False
-
-def get_india_vix_nse(driver: webdriver.Chrome) -> float:
-    try:
-        driver.get(VIX_API_URL)
-        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        data = json.loads(driver.find_element(By.TAG_NAME, "body").text)
-        for item in data.get('data', []):
-            if (item.get('index') or item.get('indexSymbol')) == "INDIA VIX":
-                vix = float(item.get('last', 0))
-                if validate_vix(vix): return round(vix, 2)
-    except: pass
-    try:
-        driver.get(INDICES_URL)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        match = re.search(r'INDIA\s*VIX.*?(\d{2}\.\d{2})', driver.find_element(By.TAG_NAME, "body").text)
-        if match: return round(float(match.group(1)), 2)
-    except: pass
-    return 0.00
-
-def find_expiry_dropdown(driver: webdriver.Chrome):
-    try:
-        WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "select")))
-        for sel in driver.find_elements(By.TAG_NAME, "select"):
-            if str(datetime.now().year) in sel.text: return sel
-        return None
-    except: return None
-
-def get_monthly_expiries(driver: webdriver.Chrome, dropdown_element) -> Optional[List[Tuple]]:
-    try:
-        options = dropdown_element.find_elements(By.TAG_NAME, "option")
-        date_map = []
-        for opt in options:
-            val = opt.get_attribute("value")
-            text = opt.text
-            if "Select" in text or not val: continue
-            try: date_map.append((datetime.strptime(text, "%d-%b-%Y"), val))
-            except: continue
-        
-        if not date_map: return None
-        date_map.sort(key=lambda x: x[0])
-        month_groups = {}
-        for d_obj, val in date_map:
-            month_groups.setdefault((d_obj.year, d_obj.month), []).append((d_obj, val))
-        
-        return [month_groups[k][-1] for k in sorted(month_groups.keys())][:3]
-    except: return None
-
-def switch_expiry(driver: webdriver.Chrome, dropdown, value: str) -> bool:
-    try:
-        old_src = driver.page_source
-        driver.execute_script("var s=arguments[0]; var v=arguments[1]; s.value=v; s.dispatchEvent(new Event('change', {bubbles:true}));", dropdown, value)
-        for _ in range(10):
-            time.sleep(1)
-            if driver.page_source != old_src: return True
-        return False
-    except: return False
-
-def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
-    try:
-        # Wait for table to ensure page loaded
-        try: WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
-        except: pass
-
-        spot = 0.0
-        
-        # --- ROBUST SPOT PRICE EXTRACTION ---
-        
-        # Method 1: Target the specific ID (Most Reliable)
-        try:
-            element = driver.find_element(By.ID, "equity_underlyingVal")
-            text = element.text.strip() # e.g., "NIFTY 23,518.50"
-            match = re.search(r'([0-9,]+\.\d{2})', text)
-            if match:
-                spot = float(match.group(1).replace(",", ""))
-                logger.info(f"       ✅ Spot found via ID: {spot}")
-        except: 
-            pass
-
-        # Method 2: Fallback Regex on Page Source (Context Aware)
-        if spot == 0.0:
-            src = driver.page_source
-            # Matches "NIFTY" or "NIFTY 50" followed by a number
-            match = re.search(r'NIFTY\s*(?:50)?\s*[:\s]\s*([0-9,]+\.\d{2})', src, re.IGNORECASE)
-            if match:
-                spot = float(match.group(1).replace(",", ""))
-                logger.info(f"       ✅ Spot found via Regex: {spot}")
-
-        # --- VALIDATION ---
-        if not validate_spot_price(spot):
-            logger.error(f"❌ Invalid Spot Price Scraped: {spot}")
-            raise Exception("Spot Price Validation Failed")
-
-        # --- TABLE PARSING ---
-        dfs = pd.read_html(io.StringIO(driver.page_source))
-        if not dfs: raise Exception("No tables")
-        
-        df = next((d for d in dfs if d.shape[0] > 10 and d.shape[1] > 10), None)
-        if df is None: raise Exception("Chain table not found")
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ['_'.join(map(str, col)).strip() for col in df.columns.values]
-        
-        strike_col = next((c for c in df.columns if "STRIKE" in str(c).upper()), None)
-        iv_cols = [c for c in df.columns if "IV" in str(c).upper()]
-        ltp_cols = [c for c in df.columns if "LTP" in str(c).upper()]
-        
-        if not strike_col or len(iv_cols) < 2: raise Exception("Missing columns")
-
-        df = df[pd.to_numeric(df[strike_col], errors='coerce').notnull()].copy()
-        df[strike_col] = df[strike_col].astype(float)
-        
-        # --- 1. GENERAL CALCULATIONS (ATM / Straddle) ---
-        df['diff'] = abs(df[strike_col] - spot)
-        df_sorted = df.sort_values('diff').reset_index(drop=True)
-        
-        atm = df_sorted.iloc[0]
-        def safe(v):
-            try: return float(v) if v!='-' else 0.0
-            except: return 0.0
-
-        straddle = safe(atm[ltp_cols[0]]) + safe(atm[ltp_cols[1]])
-        
-        atm_call_iv = 0.0
-        atm_put_iv = 0.0
-        for i in range(min(5, len(df_sorted))):
-            c_iv = safe(df_sorted.iloc[i][iv_cols[0]])
-            p_iv = safe(df_sorted.iloc[i][iv_cols[1]])
-            if c_iv > 0 and p_iv > 0: 
-                atm_call_iv = c_iv
-                atm_put_iv = p_iv
-                break
-        
-        avg_iv = (atm_call_iv + atm_put_iv) / 2 if (atm_call_iv > 0 and atm_put_iv > 0) else 0.0
-        
-        # --- 2. REFINED SKEW: PRICE-BASED BASKET SELECTION ---
-        skew_val = 0.0
-        avg_put_iv_basket = 0.0
-        avg_call_iv_basket = 0.0
-        
-        try:
-            # A. Filter for Liquid '100' strikes
-            df_100 = df[df[strike_col] % 100 == 0].copy()
-            
-            # B. Define Targets (2% OTM) and Basket Width (100 pts)
-            target_put_center = spot * 0.98
-            target_call_center = spot * 1.02
-            
-            # C. Define the 3 specific price points for the basket
-            # We want strikes closest to: [Target, Target-100, Target+100]
-            basket_offsets = [0, -100, 100]
-            
-            p_targets = [target_put_center + x for x in basket_offsets]
-            c_targets = [target_call_center + x for x in basket_offsets]
-            
-            def get_basket_avg(targets, iv_col_name):
-                valid_ivs = []
-                for tgt in targets:
-                    # Find closest strike to this specific target price
-                    if not df_100.empty:
-                        closest_idx = (df_100[strike_col] - tgt).abs().idxmin()
-                        iv = safe(df_100.loc[closest_idx][iv_col_name])
-                        if iv > 0: valid_ivs.append(iv)
-                
-                if valid_ivs:
-                    return sum(valid_ivs) / len(valid_ivs)
-                return 0.0
-
-            avg_put_iv_basket = get_basket_avg(p_targets, iv_cols[1]) # Put IV
-            avg_call_iv_basket = get_basket_avg(c_targets, iv_cols[0]) # Call IV
-
-            if avg_put_iv_basket > 0 and avg_call_iv_basket > 0:
-                skew_val = avg_put_iv_basket - avg_call_iv_basket
-                    
-        except Exception as e:
-            logger.warning(f"Skew calc warning: {e}")
-
-        # --- ROUNDING ALL VALUES TO 2 DECIMALS ---
-        return {
-            "spot": round(spot, 2), 
-            "straddle": round(straddle, 2), 
-            "m1_call_iv": round(atm_call_iv, 2),
-            "m1_put_iv": round(atm_put_iv, 2),
-            "m1_iv": round(avg_iv, 2),
-            "skew_index": round(skew_val, 2), 
-            "skew_put_avg_9_10_11_iv": round(avg_put_iv_basket, 2),
-            "skew_call_avg_9_10_11_iv": round(avg_call_iv_basket, 2)
-        }
-    except Exception as e:
-        logger.warning(f"Parse error: {e}")
-        return None
-
-# --- MAIN EXECUTION ---
-def update_market_data():
-    logger.info("🔄 STARTING UPDATE PROCESS")
+    /* Pre-Stress Panel */
+    .ps-panel {
+        flex: 1;
+        min-width: 200px;
+        border-right: 1px solid #444;
+        padding-right: 20px;
+    }
+    /* Glow Effects for Status */
+    .ps-status-safe { 
+        color: #00e676; 
+        font-size: 22px; 
+        font-weight: 900; 
+        text-shadow: 0 0 10px rgba(0, 230, 118, 0.2); 
+    }
+    .ps-status-danger { 
+        color: #ff1744; 
+        font-size: 22px; 
+        font-weight: 900; 
+        animation: pulse 1.5s infinite; 
+        text-shadow: 0 0 10px rgba(255, 23, 68, 0.3);
+    }
     
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--ignore-certificate-errors")
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ]
-    chosen_ua = random.choice(user_agents)
-    options.add_argument(f"user-agent={chosen_ua}")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": chosen_ua})
+    .ps-metrics { font-family: monospace; font-size: 13px; color: #bbb; margin-top: 8px; }
     
+    /* Drift Grid */
+    .drift-grid {
+        flex: 3;
+        display: flex;
+        justify-content: space-between;
+        gap: 15px;
+    }
+    .drift-item {
+        background: #0d1117;
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 12px;
+        flex: 1;
+        text-align: center;
+        transition: transform 0.2s, border-color 0.2s;
+        box-shadow: inset 0 0 15px rgba(0,0,0,0.3);
+    }
+    .drift-item:hover {
+        border-color: #777;
+        transform: translateY(-2px);
+    }
+    .drift-label { font-size: 11px; color: #999; font-weight: bold; letter-spacing: 0.5px; }
+    .drift-val { font-size: 18px; font-weight: bold; margin-top: 4px; }
+    
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- DATA LOADERS ---
+def load_data(limit=300):
+    conn = sqlite3.connect(DB_NAME)
+    query = f"SELECT * FROM market_logs ORDER BY timestamp DESC LIMIT {limit}"
     try:
-        can_scrape = check_scrape_permission(driver)
-        
-        if can_scrape:
-            logger.info("✅ Permission Granted. Proceeding with scraping.")
-        else:
-            if check_live_holiday(driver):
-                logger.info("🚫 Market is CLOSED (Holiday). Stopping.")
-                driver.quit()
-                return
-            if datetime.now().weekday() >= 5:
-                logger.info("🚫 Market is CLOSED (Weekend + No Fresh Data). Stopping.")
-                driver.quit()
-                return
-            logger.warning("⚠️ Permission failed, but attempting scrape as failsafe...")
-        
-        logger.info("   -> Initializing Session...")
-        driver.get(HOME_URL)
-        time.sleep(5)
-        
-        logger.info("   -> Loading Option Chain...")
-        driver.get(OPTION_CHAIN_URL)
-        time.sleep(10)
-
-        dropdown = find_expiry_dropdown(driver)
-        if not dropdown: 
-            logger.error("❌ Expiry Dropdown not found.")
-            return
-
-        expiries = get_monthly_expiries(driver, dropdown)
-        if not expiries: 
-            logger.error("❌ No expiries found.")
-            return
-
-        live_data = {}
-        m1_month_str = ""
-
-        for i, (date_obj, val) in enumerate(expiries):
-            label = f"m{i+1}"
-            logger.info(f"   -> Scraping {label.upper()} ({date_obj.strftime('%d-%b')})...")
-            
-            if label == "m1":
-                m1_month_str = date_obj.strftime("%b")
-
-            dropdown = find_expiry_dropdown(driver)
-            switch_expiry(driver, dropdown, val)
-            row_data = scrape_table_data(driver)
-            
-            if row_data:
-                if label == "m1":
-                    live_data.update({
-                        'spot_price': row_data['spot'],
-                        'm1_straddle': row_data['straddle'],
-                        'm1_call_iv': row_data['m1_call_iv'],
-                        'm1_put_iv': row_data['m1_put_iv'],
-                        'm1_iv': row_data['m1_iv'],
-                        'skew_index': row_data['skew_index'],
-                        'skew_put_avg_9_10_11_iv': row_data['skew_put_avg_9_10_11_iv'],
-                        'skew_call_avg_9_10_11_iv': row_data['skew_call_avg_9_10_11_iv']
-                    })
-                elif label == "m2": live_data['m2_iv'] = row_data['m1_iv'] 
-                elif label == "m3": live_data['m3_iv'] = row_data['m1_iv']
-            else:
-                logger.warning(f"       ⚠️ Failed to scrape {label}")
-
-        live_data['india_vix'] = get_india_vix_nse(driver)
-        live_data['m1_month'] = m1_month_str
-
-        if live_data.get('spot_price', 0) == 0:
-            logger.error("❌ Scrape Failed: Spot Price is 0.")
-            return
-
-        if live_data.get('m3_iv', 0) == 0:
-            if live_data.get('m2_iv', 0) > 0: live_data['m3_iv'] = live_data['m2_iv']
-            elif live_data.get('m1_iv', 0) > 0: live_data['m3_iv'] = live_data['m1_iv']
-
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        schema_keys = [
-            'spot_price', 'm1_straddle', 'm1_call_iv', 'm1_put_iv', 'm1_iv', 
-            'm2_iv', 'm3_iv', 'skew_put_avg_9_10_11_iv', 'skew_call_avg_9_10_11_iv', 
-            'skew_index', 'india_vix', 'm1_month'
-        ]
-        
-        for k in schema_keys: 
-            if k not in live_data: 
-                live_data[k] = 0.00 if k != 'm1_month' else ""
-            elif k != 'm1_month':
-                # Double ensure formatting for the dictionary being sent to DB
-                live_data[k] = round(live_data[k], 2)
-
-        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        today_date = datetime.now().strftime('%Y-%m-%d')
-        
-        cursor.execute("DELETE FROM market_logs WHERE timestamp LIKE ?", (f"{today_date}%",))
-        cursor.execute('''
-            INSERT OR REPLACE INTO market_logs 
-            (timestamp, spot_price, m1_straddle, m1_call_iv, m1_put_iv, m1_iv, m2_iv, m3_iv, 
-             skew_put_avg_9_10_11_iv, skew_call_avg_9_10_11_iv, skew_index, india_vix, m1_month)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            timestamp_str, live_data['spot_price'], live_data['m1_straddle'], 
-            live_data['m1_call_iv'], live_data['m1_put_iv'], live_data['m1_iv'],
-            live_data['m2_iv'], live_data['m3_iv'], 
-            live_data['skew_put_avg_9_10_11_iv'], live_data['skew_call_avg_9_10_11_iv'],
-            live_data['skew_index'], live_data['india_vix'], live_data['m1_month']
-        ))
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"✅ DATA SAVED for {today_date}!")
-        logger.info(f"   Spot: {live_data['spot_price']} | M1 Call IV: {live_data['m1_call_iv']:.2f}% | Skew Index: {live_data['skew_index']:.2f}")
-
+        df = pd.read_sql(query, conn)
     except Exception as e:
-        logger.error(f"❌ Main Loop Error: {e}")
+        st.error(f"Database Error: {e}")
+        return pd.DataFrame()
     finally:
-        driver.quit()
+        conn.close()
+    
+    if not df.empty:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        cols = ['m1_iv', 'm3_iv', 'm1_straddle', 'spot_price', 'm2_iv', 'skew_index', 'india_vix']
+        for c in cols:
+            if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
+    return df
+
+# --- UI HELPER ---
+def render_tile(label, state_bool, display_text, subtext, is_stress=False):
+    if state_bool is None: c, b = "text-gray", "border-gray"
+    elif state_bool: c, b = ("text-red", "border-red") if is_stress else ("text-amber", "border-amber")
+    else: c, b = "text-green", "border-green"
+    st.markdown(f"""<div class="grid-tile {b}"><div class="tile-header">{label}</div><div class="tile-value {c}">{display_text}</div><div class="tile-sub">{subtext}</div></div>""", unsafe_allow_html=True)
+
+# --- ENGINE LOGIC ---
+def iv_likelihood(iv_chg): return {"COMPRESSION": max(0, 1 - iv_chg/0.5), "TRANSITION": np.clip(iv_chg/0.6, 0, 1), "EXPANSION": np.clip(iv_chg/1.0, 0, 1), "STRESS": np.clip((iv_chg - 0.8)/1.2, 0, 1)}
+def straddle_likelihood(std_pct): return {"COMPRESSION": 1 if std_pct < -0.2 else 0.2, "TRANSITION": np.clip((std_pct + 0.2)/0.4, 0, 1), "EXPANSION": np.clip((std_pct + 0.1)/0.6, 0, 1), "STRESS": np.clip((std_pct - 0.8)/1.0, 0, 1)}
+def back_month_likelihood(bm_spread): return {"COMPRESSION": np.clip(-bm_spread / 0.3, 0, 1), "TRANSITION": np.clip(bm_spread/0.4, 0, 1), "EXPANSION": np.clip(bm_spread/0.6, 0, 1), "STRESS": np.clip(bm_spread/0.8, 0, 1)}
+def term_likelihood(slope): return {"COMPRESSION": np.clip(slope/1.5, 0, 1), "TRANSITION": np.clip((1.2 - slope)/1.2, 0, 1), "EXPANSION": np.clip((0.8 - slope)/0.8, 0, 1), "STRESS": np.clip((-slope - 0.3)/0.7, 0, 1)}
+def skew_likelihood(skew_chg): return {"COMPRESSION": 1 if skew_chg <= 0 else 0, "TRANSITION": np.clip((0.3 - skew_chg)/0.3, 0, 1), "EXPANSION": np.clip(skew_chg/0.6, 0, 1), "STRESS": np.clip((skew_chg - 0.6)/1.0, 0, 1)}
+def disconnect_likelihood(disc): return {"COMPRESSION": 0, "TRANSITION": 0.4 if disc else 0.6, "EXPANSION": 0.7 if disc else 0.4, "STRESS": 0.9 if disc else 0.2}
+
+REGIMES = ["COMPRESSION", "TRANSITION", "EXPANSION", "STRESS"]
+WEIGHTS = {"iv": 1.2, "straddle": 1.2, "back_month": 1.0, "term": 1.0, "skew": 1.4, "disconnect": 0.8}
+
+def compute_rpv(curr, prev, prev2):
+    iv_chg = curr['m1_iv'] - prev['m1_iv']
+    std_pct = ((curr['m1_straddle'] - prev['m1_straddle']) / prev['m1_straddle']) * 100
+    bm_spread = (curr.get('m2_iv', 0) - prev.get('m2_iv', 0)) - iv_chg
+    slope = curr['m3_iv'] - curr['m1_iv']
+    skew_chg = curr['skew_index'] - prev['skew_index']
+    disc = (abs(((curr['spot_price'] - prev['spot_price']) / prev['spot_price']) * 100) < 0.15 and iv_chg > 0.5)
+    
+    lhs = {
+        "iv": iv_likelihood(iv_chg), "straddle": straddle_likelihood(std_pct), "back_month": back_month_likelihood(bm_spread),
+        "term": term_likelihood(slope), "skew": skew_likelihood(skew_chg), "disconnect": disconnect_likelihood(disc)
+    }
+    scores = {r: sum(WEIGHTS[k] * lhs[k][r] for k in lhs) for r in REGIMES}
+    total = sum(scores.values())
+    return {r: (scores[r]/total if total > 0 else 0) for r in REGIMES}, lhs
+
+def regime_entropy(rpv): return -sum(p * np.log(p + 1e-9) for p in rpv.values())
+
+def derive_risk_posture(rpv):
+    if rpv["STRESS"] > 0.20: h = ("MANDATORY", "#dc3545")
+    elif rpv["STRESS"] > 0.15: h = ("ACCUMULATE", "#ffc107")
+    else: h = ("OPTIONAL", "#666")
+    return {"long_gamma": (rpv["EXPANSION"] + rpv["STRESS"] > 0.5) and (rpv["COMPRESSION"] < 0.3), "short_theta": rpv["COMPRESSION"] > 0.5, "tail_hedge_data": h, "carry_allowed": rpv["COMPRESSION"] > 0.4 and rpv["STRESS"] < 0.15}
+
+def compute_rpv_series(df):
+    rows = []
+    if len(df) < 3: return pd.DataFrame()
+    for i in range(2, len(df)):
+        rpv, _ = compute_rpv(df.iloc[i], df.iloc[i-1], df.iloc[i-2])
+        rpv['timestamp'] = df.iloc[i]['timestamp']
+        rows.append(rpv)
+    return pd.DataFrame(rows)
+
+def compute_rpv_drift(rpv_df, lookback=3):
+    return {r: (rpv_df[r].iloc[-1] - rpv_df[r].iloc[-(lookback+1)]) if len(rpv_df) > lookback else 0.0 for r in REGIMES}
+
+def detect_pre_stress(rpv_df):
+    if len(rpv_df) < 4: return False, {"stress_slope": 0, "stress_accel": False, "stress_val": 0, "exp_val": 0}
+    s, e = rpv_df["STRESS"].values, rpv_df["EXPANSION"].values
+    slope = s[-1] - s[-3]
+    accel = (s[-1] - s[-2]) > (s[-2] - s[-3])
+    is_triggered = (s[-1] > 0.20 and slope > 0.08 and accel and s[-1] > e[-1] * 0.6)
+    return is_triggered, {"stress_slope": slope, "stress_accel": accel, "stress_val": s[-1], "exp_val": e[-1]}
+
+# --- CIS CONTEXT LOGIC ---
+def cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg, term_spread):
+    if rpv['STRESS'] > 0.20:
+        return "Low CIS due to rising stress probability"
+    if pre_stress or drift['STRESS'] > 0.08:
+        return "Low CIS due to accelerating stress drift"
+    if std_pct > -0.10:
+        return "Low CIS due to stalled straddle decay"
+    if iv_chg > 0.25:
+        return "Low CIS due to front-month IV repricing"
+    if term_spread < 0:
+        return "Low CIS due to term structure erosion"
+    return "Carry structure stable"
+
+# --- CARRY BAND LOGIC (FIXED) ---
+def carry_permission_band(cis):
+    if cis > 0.35:
+        return "FULL CARRY", "#28a745"
+    if cis > 0.15:
+        return "CONTROLLED CARRY", "#ffc107"
+    if cis > -0.05:
+        return "TOLERANCE ONLY", "#fd7e14"  # ORANGE
+    return "NO CARRY", "#dc3545"          # RED
+
+# --- CIS ENGINE ---
+def compute_cis_score(rpv, drift, stress_accel, std_pct, m1, m2):
+    return np.clip(0.40*(rpv['COMPRESSION']+rpv['TRANSITION']) + 0.20*np.clip(-std_pct/0.25, -1, 1) + 0.15*np.clip((m2-m1)/1.0, -1, 1) - 0.50*rpv['STRESS'] - 0.30*np.clip(drift['STRESS']/0.10, 0, 1) - 0.20*(1.0 if stress_accel else 0.0), -1, 1)
+
+# REMOVED OLD get_cis_status TO AVOID CONFUSION
+
+# --- CPS ENGINE (UPDATED: DUAL LAYER) ---
+def compute_cps_score(rpv, std_pct, skew_accel_bool, m1, m2, m3):
+    struct = 0.40 * (rpv['EXPANSION'] + rpv['STRESS'])
+    gamma_hat = 0.25 * np.clip(std_pct / 0.30, -1, 1)
+    term_hat = 0.15 * np.clip(-(m3 - m1)/1.0, 0, 1)
+    lag_convexity = 0.10 * np.clip((m2 - m1) / 0.8, -1, 1)
+    accel_hat = 0.10 * (1.0 if skew_accel_bool else 0.0)
+    cps = struct + gamma_hat + term_hat + lag_convexity + accel_hat
+    return np.clip(cps, -1, 0.8)
+
+def get_cps_status(score):
+    if score > 0.40: return "CONVEXITY PERMITTED", "#28a745"
+    if score > 0.15: return "SELECTIVE", "#ffc107"
+    if score > -0.15: return "NEUTRAL", "#888"
+    return "EXPENSIVE", "#dc3545"
+
+# --- METRICS: DECAY & DIVERGENCE ---
+def permission_decay_meter(cis_series):
+    if len(cis_series) < 4: return 0.0
+    delta = cis_series[-1] - cis_series[-4]
+    decay = np.clip(-delta / 0.15, 0, 1) 
+    return decay
+
+def get_decay_status(decay):
+    if decay < 0.25: return "#28a745", "STABLE"
+    if decay < 0.5: return "#ffc107", "DECAYING"
+    if decay < 0.75: return "#fd7e14", "DANGEROUS"
+    return "#dc3545", "EXIT ZONE"
+
+def check_cis_divergence(cis, cis_prev, std_pct, vrp, rpv, rpv_prev):
+    if std_pct < -0.15 and cis < cis_prev: return "⚠️ PERMISSION DECAY (Theta Trap)", "#ffc107"
+    stress_delta = abs(rpv['STRESS'] - rpv_prev['STRESS'])
+    if stress_delta < 0.03 and (cis - cis_prev) < -0.1: return "⚠️ STRUCTURAL ROT (Hidden Risk)", "#fd7e14"
+    if vrp > 0 and cis < 0: return "🚨 EDGE MIRAGE (Convexity Risk)", "#dc3545"
+    if cis > 0.25 and (rpv['EXPANSION'] + rpv['STRESS']) > 0.6: return "🚨 SYSTEM CONFLICT (Data Error)", "#dc3545"
+    return None, None
+
+# --- PLOT CIS/CPS TREND ---
+def plot_cis_cps_trend(df):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cis'], mode='lines+markers', name='CIS (Carry)', line=dict(color='#00d1b2', width=2)))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cps'], mode='lines+markers', name='CPS (Convexity)', line=dict(color='#e67e22', width=2, dash='dot')))
+    fig.add_hline(y=0, line_dash='dash', line_color='#666')
+    fig.update_layout(title="<b>CIS vs CPS — Permission Regimes</b>", template="plotly_dark", height=280, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[-1, 1], title="Permission"), legend=dict(orientation="h", y=1.1))
+    return fig
+
+def run_engine_live(df):
+    df_c = df.sort_values('timestamp', ascending=True).copy()
+    if len(df_c) < 5: return None, None, df_c.iloc[-1]
+    
+    # MODIFICATION: Rolling 5-Day RV for VRP
+    df_c['log_ret'] = np.log(df_c['spot_price'] / df_c['spot_price'].shift(1))
+    df_c['rv_5d'] = df_c['log_ret'].rolling(window=5).std() * np.sqrt(252) * 100
+    
+    # 1. HISTORICAL CALCULATION (CIS & CPS)
+    history_data = []
+    hist_window = df_c.tail(60)
+    
+    for i in range(3, len(hist_window)): 
+        _c, _p, _p2, _p3 = hist_window.iloc[i], hist_window.iloc[i-1], hist_window.iloc[i-2], hist_window.iloc[i-3]
+        _rpv, _ = compute_rpv(_c, _p, _p2)
+        _std_pct = ((_c['m1_straddle'] - _p['m1_straddle']) / _p['m1_straddle']) * 100
+        _cis = compute_cis_score(_rpv, {'STRESS':0}, False, _std_pct, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']))
+        _skew_accel = (_c['skew_index'] - _p['skew_index']) > (_p['skew_index'] - _p2['skew_index'])
+        _cps = compute_cps_score(_rpv, _std_pct, _skew_accel, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']), _c['m3_iv'])
+        history_data.append({'timestamp': _c['timestamp'], 'cis': _cis, 'cps': _cps, 'rpv': _rpv})
+        
+    df_hist = pd.DataFrame(history_data)
+
+    # 2. CURRENT CALCULATIONS
+    curr, prev, prev2, prev3 = df_c.iloc[-1], df_c.iloc[-2], df_c.iloc[-3], df_c.iloc[-4]
+    rpv, lhs = compute_rpv(curr, prev, prev2)
+    dom = max(rpv, key=rpv.get)
+    colors = {"COMPRESSION": "#28a745", "TRANSITION": "#ffc107", "EXPANSION": "#fd7e14", "STRESS": "#dc3545"}
+    
+    rpv_hist_short = compute_rpv_series(df_c.tail(15))
+    drift = compute_rpv_drift(rpv_hist_short)
+    pre_stress, ps_det = detect_pre_stress(rpv_hist_short)
+    
+    std_pct = ((curr['m1_straddle'] - prev['m1_straddle']) / prev['m1_straddle']) * 100
+    skew_accel_bool = (curr['skew_index'] - prev['skew_index']) > (prev['skew_index'] - prev2['skew_index'])
+    
+    cis = compute_cis_score(rpv, drift, pre_stress, std_pct, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']))
+    cps = compute_cps_score(rpv, std_pct, skew_accel_bool, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']), curr['m3_iv'])
+    
+    if not df_hist.empty and cis != df_hist.iloc[-1]['cis']:
+         new_row = pd.DataFrame([{'timestamp': curr['timestamp'], 'cis': cis, 'cps': cps, 'rpv': rpv}])
+         df_hist = pd.concat([df_hist, new_row], ignore_index=True)
+
+    # 3. METRICS
+    cis_vals = df_hist['cis'].values
+    decay_val = permission_decay_meter(cis_vals)
+    decay_color, decay_label = get_decay_status(decay_val)
+    
+    prev_cis_val = cis_vals[-2] if len(cis_vals) > 1 else cis
+    prev_rpv = df_hist.iloc[-2]['rpv'] if len(df_hist) > 1 else rpv
+    
+    vrp_proxy = curr['m1_iv'] - curr.get('rv_5d', 0)
+    div_msg, div_col = check_cis_divergence(cis, prev_cis_val, std_pct, vrp_proxy, rpv, prev_rpv)
+
+    cis_delta = cis - prev_cis_val
+    
+    dte = curr.get('m1_dte', 30)
+    signals = {
+        't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
+        't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%"), 
+        't4': (curr.get('m2_iv',0) - curr['m1_iv'] < 0, "INVERTED" if curr.get('m2_iv',0) - curr['m1_iv'] < 0 else "NORMAL", f"{curr.get('m2_iv',0) - curr['m1_iv']:.2f}"), 
+        't5': (curr['skew_index'] - prev['skew_index'] > 0.3, "RISING" if curr['skew_index'] - prev['skew_index'] > 0.3 else "FLAT", f"{curr['skew_index'] - prev['skew_index']:+.2f}"), 
+    }
+    
+    # Calculate vars for Context Logic
+    iv_chg_val = curr['m1_iv'] - prev['m1_iv']
+    term_spread_val = curr.get('m2_iv', curr['m1_iv']) - curr['m1_iv']
+
+    # New Context Logic Call
+    context_label = cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg_val, term_spread_val)
+    
+    # *** FIX: Use correct function and capture color ***
+    band_label, band_color = carry_permission_band(cis)
+
+    ctx = {
+        'regime': dom, 'color': colors.get(dom, "#888"), 'confidence': "HIGH" if rpv[dom] > 0.55 else "MEDIUM",
+        'rpv': rpv, 'risk': derive_risk_posture(rpv), 'drivers': [k for k,v in lhs.items() if v[dom]>0.6], 'counterforces': [k for k,v in lhs.items() if v[dom]<0.3],
+        'is_roll': dte >= 28, 'is_late': dte <= 7, 'dte': dte, 
+        'cis': {'score': cis, 'label': band_label, 'color': band_color, 'delta': cis_delta, 'context': context_label},
+        'cps': {'score': cps, 'label': get_cps_status(cps)[0], 'color': get_cps_status(cps)[1]},
+        'decay': {'val': decay_val, 'label': decay_label, 'color': decay_color},
+        'divergence': {'msg': div_msg, 'color': div_col},
+        'history': df_hist,
+        'drift': drift,
+        'pre_stress': pre_stress,
+        'ps_det': ps_det
+    }
+    return signals, ctx, curr
+
+# --- HELPER: FULL RPV HISTORY ---
+def get_full_rpv_history(df):
+    rows = []
+    if len(df) < 3: return pd.DataFrame()
+    for i in range(2, len(df)):
+        rpv, _ = compute_rpv(df.iloc[i], df.iloc[i-1], df.iloc[i-2])
+        rpv['timestamp'] = df.iloc[i]['timestamp']
+        rows.append(rpv)
+    return pd.DataFrame(rows)
+
+# --- HELPER: CALCULATE HISTORICAL REGIME ---
+def calculate_historical_regime(df):
+    history = []
+    if len(df) < 5: return pd.DataFrame()
+    for i in range(2, len(df)):
+        rpv, _ = compute_rpv(df.iloc[i], df.iloc[i-1], df.iloc[i-2])
+        dom = max(rpv, key=rpv.get)
+        history.append({'timestamp': df.iloc[i]['timestamp'], 'regime': dom, 'val': 1})
+    return pd.DataFrame(history)
+
+# --- DASHBOARD RENDERER ---
+def render_dashboard(df_selected, signals, ctx, curr, df_all):
+    cis = ctx['cis']
+    cps = ctx['cps']
+    decay = ctx['decay']
+    div = ctx['divergence']
+    drift = ctx['drift']
+    pre_stress = ctx['pre_stress']
+    
+    arrow = "<span class='delta-arrow' style='color: #28a745;'>↑</span>" if cis['delta'] > 0.001 else "<span class='delta-arrow' style='color: #dc3545;'>↓</span>" if cis['delta'] < -0.001 else ""
+    
+    # 1. Executive Command (UPDATED WITH NEW BANDS & CONTEXT)
+    st.markdown(f"""<div class="exec-box" style="border-color: {cis['color']};">
+    <div style="flex: 1;">
+        <div style="font-size: 11px; color: #888; font-weight:bold;">CARRY PERMISSION</div>
+        <div class="status-badge" style="background-color: {cis['color']};">{cis['label']}</div>
+        <div class="cis-score">{cis['score']*100:.0f}% {arrow}</div>
+        <div class="cis-context">{cis['context']}</div>
+    </div>
+    <div class="perm-meter"> 
+        <div style="font-size: 11px; color: #888; font-weight:bold;">DECAY METER</div>
+        <div style="font-size: 18px; font-weight: 900; color:{decay['color']};">
+            {decay['label']} ({decay['val']:.2f})
+        </div>
+    </div>
+    <div style="flex: 1; text-align: right; padding-left: 20px;">
+        <div style="font-size: 11px; color: #888; font-weight:bold;">CONVEXITY PERMISSION</div>
+        <div class="status-badge" style="background-color: {cps['color']};">{cps['label']}</div>
+        <div class="cis-score" style="justify-content: flex-end; color: #e67e22;">{cps['score']*100:.0f}%</div>
+    </div>
+</div>""", unsafe_allow_html=True)
+
+    # 2. Market Structure
+    p_comp = int(ctx['rpv']['COMPRESSION'] * 100)
+    p_tran = int(ctx['rpv']['TRANSITION'] * 100)
+    p_expa = int(ctx['rpv']['EXPANSION'] * 100)
+    p_strs = int(ctx['rpv']['STRESS'] * 100)
+
+    st.markdown(f"""<div class="regime-box" style="background-color: {ctx['color']}15; border-color: {ctx['color']}80;">
+    <div style="text-align: center; font-size: 11px; color: #888; letter-spacing: 1px;">MARKET STRUCTURE</div>
+    <div class="regime-label" style="color: {ctx['color']};">{ctx['regime']} <span style='font-size: 12px; color: #aaa'>({ctx['confidence']})</span></div>
+    <div class="rpv-bar">
+        <div style="width: {ctx['rpv']['COMPRESSION']*100}%; background: #28a745;"></div>
+        <div style="width: {ctx['rpv']['TRANSITION']*100}%; background: #ffc107;"></div>
+        <div style="width: {ctx['rpv']['EXPANSION']*100}%; background: #fd7e14;"></div>
+        <div style="width: {ctx['rpv']['STRESS']*100}%; background: #dc3545;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; font-family: monospace; font-weight: bold;">
+        <div style="color: #28a745;">COMP: {p_comp}%</div>
+        <div style="color: #ffc107;">TRAN: {p_tran}%</div>
+        <div style="color: #fd7e14;">EXPA: {p_expa}%</div>
+        <div style="color: #dc3545;">STRS: {p_strs}%</div>
+    </div>
+</div>""", unsafe_allow_html=True)
+
+    # 4. Divergence Warning
+    if div['msg']:
+        st.markdown(f"""<div class="div-warning" style="background-color: {div['color']}20; border-color: {div['color']}; color: {div['color']};">{div['msg']}</div>""", unsafe_allow_html=True)
+
+    # 6. Signals
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: s=signals['t1']; render_tile("FRONT STRESS (M1)", s[0], s[1], s[2])
+    with c2: s=signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2])
+    with c3: s=signals['t4']; render_tile("CARRY INSULATION", s[0], s[1], s[2], True)
+    with c4: s=signals['t5']; render_tile("HEDGING PRESSURE", s[0], s[1], s[2])
+    st.markdown(f"""<div class="mini-diag"><span>SPOT: {curr['spot_price']:.0f}</span><span>ATM IV: {curr['m1_iv']:.2f}%</span><span>STRADDLE: {curr['m1_straddle']:.0f}</span><span>DTE: {ctx['dte']}</span></div>""", unsafe_allow_html=True)
+
+    # --- REGIME DYNAMICS (NEW SECTION) ---
+    st.markdown('<div class="section-header">🔍 Regime Dynamics & Stability</div>', unsafe_allow_html=True)
+    
+    # Pre-Stress Status
+    ps_status = "<span class='ps-status-danger'>⚠️ TRIGGERED</span>" if pre_stress else "<span class='ps-status-safe'>✅ SAFE</span>"
+    ps_msg = "WARNING: TAIL RISK > 60% OF EXPANSION" if pre_stress else "System Stable. No immediate crash precursors."
+    
+    # Drift formatting helper
+    def fmt_drift(val):
+        sym = "↑" if val > 0 else "↓" if val < 0 else "−"
+        c = "#28a745" if val > 0.05 else "#dc3545" if val < -0.05 else "#888"
+        if val > 0.1: c = "#00e676" # strong positive
+        return f"<span style='color:{c}; font-weight:bold;'>{sym} {abs(val):.2f}</span>"
+
+    # FLUSH LEFT HTML BLOCK TO FIX INDENTATION BUG
+    st.markdown(textwrap.dedent(f"""
+    <div class="dynamics-console">
+        <div class="ps-panel">
+            <div class="dynamics-title">PRE-STRESS DETECTOR</div>
+            <div class="ps-status">{ps_status}</div>
+            <div class="ps-metrics">
+                <div>Slope: {ctx['ps_det']['stress_slope']:.2f}</div>
+                <div>Accel: {ctx['ps_det']['stress_accel']}</div>
+                <div style="margin-top:4px; font-style:italic;">{ps_msg}</div>
+            </div>
+        </div>
+        <div class="drift-grid">
+            <div class="drift-item"><div class="drift-label">COMP DRIFT</div><div class="drift-val">{fmt_drift(drift['COMPRESSION'])}</div></div>
+            <div class="drift-item"><div class="drift-label">TRAN DRIFT</div><div class="drift-val">{fmt_drift(drift['TRANSITION'])}</div></div>
+            <div class="drift-item"><div class="drift-label">EXPA DRIFT</div><div class="drift-val">{fmt_drift(drift['EXPANSION'])}</div></div>
+            <div class="drift-item"><div class="drift-label">STRS DRIFT</div><div class="drift-val">{fmt_drift(drift['STRESS'])}</div></div>
+        </div>
+    </div>
+    """), unsafe_allow_html=True)
+
+    # --- ANALYTICS ---
+    st.markdown('<div class="section-header">📊 Analytics</div>', unsafe_allow_html=True)
+    df_chart = df_selected.sort_values('timestamp').tail(60)
+
+    # 1. Spot vs Straddle
+    fig_spot = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['spot_price'], line=dict(color='#3498db', width=2), name="Spot"), secondary_y=False)
+    fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['m1_straddle'], line=dict(color='#e74c3c', width=2, dash='dot'), name="Straddle"), secondary_y=True)
+    fig_spot.update_layout(title="<b>Nifty Spot vs ATM Straddle Price Trend</b>", template="plotly_dark", height=350, margin=dict(t=20, b=20, l=20, r=20), legend=dict(orientation="h", y=1.1))
+    st.plotly_chart(fig_spot, width="stretch")
+
+    # 2. CIS vs CPS TREND
+    if not ctx['history'].empty:
+        fig_trend = plot_cis_cps_trend(ctx['history'])
+        st.plotly_chart(fig_trend, width="stretch")
+
+    # 3. Regime Probabilities
+    rpv_full_hist = get_full_rpv_history(df_selected.tail(60))
+    if not rpv_full_hist.empty:
+        fig_rpv = go.Figure()
+        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['STRESS'], mode='lines', stackgroup='one', name='STRESS', line=dict(color='#dc3545', width=0)))
+        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['EXPANSION'], mode='lines', stackgroup='one', name='EXPANSION', line=dict(color='#fd7e14', width=0)))
+        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['TRANSITION'], mode='lines', stackgroup='one', name='TRANSITION', line=dict(color='#ffc107', width=0)))
+        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['COMPRESSION'], mode='lines', stackgroup='one', name='COMPRESSION', line=dict(color='#28a745', width=0)))
+        fig_rpv.update_layout(title="<b>Regime Probabilities Over Time (2 Months)</b>", template="plotly_dark", height=300, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[0, 1]), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig_rpv, width="stretch")
+
+    # 4. Metric Charts
+    df_hist = df_chart.copy()
+    # MODIFICATION: M2 - M1
+    df_hist['slope'] = df_hist['m2_iv'] - df_hist['m1_iv']
+    df_hist['slope_col'] = np.where(df_hist['slope'] >= 0, '#00cc00', '#ff0000')
+    df_hist['std_pct'] = df_hist['m1_straddle'].pct_change() * 100
+    df_hist['std_col'] = np.where(df_hist['std_pct'] <= 0, '#00cc00', '#ff0000') 
+    df_hist['log_ret'] = np.log(df_hist['spot_price'] / df_hist['spot_price'].shift(1))
+    df_hist['rv_5d'] = df_hist['log_ret'].rolling(window=5).std() * np.sqrt(252) * 100
+    df_hist['vrp'] = df_hist['m1_iv'] - df_hist['rv_5d']
+    df_hist['vrp_col'] = np.where(df_hist['vrp'] > 0, '#00cc00', '#ff0000') 
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fig_slope = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['slope'], marker_color=df_hist['slope_col']))
+        fig_slope.update_layout(title="<b>Near Term Structure (M2-M1)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        st.plotly_chart(fig_slope, width="stretch")
+    with c2:
+        fig_std = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['std_pct'], marker_color=df_hist['std_col']))
+        fig_std.update_layout(title="<b>Daily Straddle Change %</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        st.plotly_chart(fig_std, width="stretch")
+
+    c3, c4 = st.columns(2)
+    with c3:
+        fig_vrp = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['vrp'], marker_color=df_hist['vrp_col']))
+        fig_vrp.update_layout(title="<b>VRP Index (Edge)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        st.plotly_chart(fig_vrp, width="stretch")
+    with c4:
+        fig_skew = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['skew_index'], mode='lines', line=dict(color='#3498db', width=2), fill='tozeroy'))
+        fig_skew.update_layout(title="<b>Skew Index</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        st.plotly_chart(fig_skew, width="stretch")
+
+    # 5. Missing Charts Re-added
+    c5, c6 = st.columns(2)
+    with c5:
+        fig_vvix = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['india_vix'], mode='lines', line=dict(color='#f1c40f', width=2)))
+        fig_vvix.update_layout(title="<b>INDIA VIX</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        st.plotly_chart(fig_vvix, width="stretch")
+    with c6:
+        fig_sd = go.Figure()
+        daily_iv = (df_hist['m1_iv'] / 100) / np.sqrt(252)
+        spot_pct = df_hist['spot_price'].pct_change()
+        df_hist['sd_move'] = (spot_pct / daily_iv.shift(1)).abs().fillna(0)
+        
+        fig_sd.add_trace(go.Scatter(x=df_hist['timestamp'], y=df_hist['sd_move'], fill='tozeroy', mode='lines', line=dict(color='#9b59b6')))
+        fig_sd.add_hline(y=1.0, line_dash="dash", line_color="red")
+        fig_sd.update_layout(title="<b>Price Displacement (SD)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
+        st.plotly_chart(fig_sd, width="stretch")
+
+def main():
+    df_all = load_data(300) 
+    if len(df_all) < 5: st.error("⚠️ Not enough data found."); st.stop()
+
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1: 
+        st.markdown(f"**{df_all.iloc[0]['timestamp'].strftime('%d %b %Y | %H:%M')} IST**")
+        sel_date = st.date_input("Date", value=df_all['timestamp'].max().date())
+    
+    df_sel = df_all[df_all['timestamp'].dt.date <= sel_date]
+    if df_sel.empty: st.stop()
+    signals, ctx, curr = run_engine_live(df_sel)
+
+    with c2: 
+        st.markdown("""<h1 style='text-align: center; margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'>⚡ VOLSTATE System </h1>""", unsafe_allow_html=True)
+        st.markdown("""<h3 style='text-align: center; margin: 0; padding: 0; color: #aaa; font-size: 16px; font-weight: 400; letter-spacing: 1px;'>Volatility Regime & Carry Integrity System</h3>""", unsafe_allow_html=True)
+        
+    with c3: 
+        st.markdown('<div style="text-align: right;">', unsafe_allow_html=True)
+        if ctx['is_roll']: st.markdown('<span class="pill pill-yellow">ROLLOVER</span>', unsafe_allow_html=True)
+        elif ctx['is_late']: st.markdown('<span class="pill pill-orange">LATE CYCLE</span>', unsafe_allow_html=True)
+        else: st.markdown('<span class="pill pill-gray">MID CYCLE</span>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    tab_dash, tab_docs = st.tabs(["📊 DASHBOARD", "📘 DOCUMENTATION"])
+
+    with tab_dash:
+        render_dashboard(df_sel, signals, ctx, curr, df_all)
+        st.markdown("<br><hr>", unsafe_allow_html=True)
+        with st.expander("📂 Raw Database"):
+            st.dataframe(df_all.style.format("{:.2f}", subset=['spot_price', 'm1_straddle', 'm1_iv', 'm2_iv', 'm3_iv', 'skew_index', 'india_vix']))
+
+    with tab_docs:
+        render_documentation_tab()
 
 if __name__ == "__main__":
-    init_db()
-    update_market_data()
+    main()
