@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import random
+import platform
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from contextlib import contextmanager
@@ -192,7 +193,6 @@ def find_expiry_dropdown(driver: webdriver.Chrome):
         except: pass
 
         # 2. LABEL STRATEGY (Most Robust based on Screenshot)
-        # Finds the 'Expiry Date' label and grabs the first <select> that follows it.
         try:
             dropdown = driver.find_element(By.XPATH, "//label[contains(text(),'Expiry Date')]/following::select[1]")
             logger.info("   🔎 Found Expiry Dropdown via Label Match.")
@@ -230,7 +230,6 @@ def get_monthly_expiries(driver: webdriver.Chrome, dropdown_element) -> Optional
         for d_obj, val in date_map:
             month_groups.setdefault((d_obj.year, d_obj.month), []).append((d_obj, val))
         
-        # Return the last expiry (monthly) for the next 3 months
         return [month_groups[k][-1] for k in sorted(month_groups.keys())][:3]
     except: return None
 
@@ -389,24 +388,34 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
 def update_market_data():
     logger.info("🔄 STARTING UPDATE PROCESS")
     
+    # 1. DETECT OPERATING SYSTEM
+    current_os = platform.system()
+    logger.info(f"🖥️ Detected OS: {current_os}")
+
     options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
     
-    # --- GITHUB ACTIONS / LINUX COMPATIBILITY FLAGS ---
-    # These are crucial for preventing timeouts in Docker/CI
-    options.add_argument("--disable-dev-shm-usage") 
-    options.add_argument("--no-zygote") 
-    options.add_argument("--single-process")
-    
+    # 2. APPLY OS-SPECIFIC FLAGS
+    if current_os == "Linux":
+        logger.info("   -> Applying Linux/GitHub Actions optimizations...")
+        options.add_argument("--headless=new") # <--- HEADLESS MODE ENABLED
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage") 
+        options.add_argument("--no-zygote")
+        options.add_argument("--single-process")
+        options.set_capability("pageLoadStrategy", "eager")
+        
+    else:
+        logger.info("   -> Applying Windows/Local optimizations...")
+        options.add_argument("--headless=new") # <--- HEADLESS MODE ENABLED FOR WINDOWS TOO
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.set_capability("pageLoadStrategy", "normal")
+
+    # Common Settings
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--start-maximized")
     options.add_argument("--ignore-certificate-errors")
-    
-    # --- EAGER LOAD STRATEGY (The Fix for Slow/Timeout) ---
-    # Stops waiting once HTML is parsed, doesn't wait for all images/scripts
-    options.set_capability("pageLoadStrategy", "eager")
 
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -421,9 +430,8 @@ def update_market_data():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": chosen_ua})
     
-    # Increased internal script timeout
-    driver.set_page_load_timeout(90)
-    driver.set_script_timeout(90)
+    driver.set_page_load_timeout(120) 
+    driver.set_script_timeout(120)
     
     try:
         can_scrape = check_scrape_permission(driver)
@@ -446,6 +454,7 @@ def update_market_data():
             WebDriverWait(driver, 90).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except TimeoutException:
             logger.error("❌ TIMEOUT: Option chain table did not load.")
+            driver.execute_script("window.scrollBy(0, 500)")
             return
 
         time.sleep(5) 
@@ -470,7 +479,6 @@ def update_market_data():
             if label == "m1":
                 m1_month_str = date_obj.strftime("%b")
 
-            # Re-find dropdown (stale element protection)
             dropdown = find_expiry_dropdown(driver)
             if dropdown:
                 switch_expiry(driver, dropdown, val)
