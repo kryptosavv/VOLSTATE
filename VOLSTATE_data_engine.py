@@ -117,14 +117,12 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
-        # 1. Check for explicit "Open" text
         open_indicators = ["Normal Market is Open", "Market Status : Open", "Capital Market : Open", "NIFTY 50 : Open"]
         for indicator in open_indicators:
             if re.search(indicator, page_text, re.IGNORECASE):
                 logger.info(f"   ✅ Detected Status: '{indicator}' -> GO")
                 return True
 
-        # 2. Check for Today's Date in header (indicates fresh EOD data)
         date_pattern = r"(\d{2}-[A-Za-z]{3}-\d{4})"
         matches = re.findall(date_pattern, page_text)
         today_str = datetime.now().strftime("%d-%b-%Y")
@@ -135,7 +133,6 @@ def check_scrape_permission(driver: webdriver.Chrome) -> bool:
                     logger.info(f"   ✅ Detected Today's Date ({date_str}) in header -> GO")
                     return True
         
-        # Fallback numeric date check
         today_num = datetime.now().strftime("%d-%m-%Y")
         if today_num in page_text:
              logger.info(f"   ✅ Detected Today's Date ({today_num}) -> GO")
@@ -396,9 +393,21 @@ def update_market_data():
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
+    
+    # --- GITHUB ACTIONS / LINUX COMPATIBILITY FLAGS ---
+    # These are crucial for preventing timeouts in Docker/CI
+    options.add_argument("--disable-dev-shm-usage") 
+    options.add_argument("--no-zygote") 
+    options.add_argument("--single-process")
+    
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--start-maximized")
     options.add_argument("--ignore-certificate-errors")
+    
+    # --- EAGER LOAD STRATEGY (The Fix for Slow/Timeout) ---
+    # Stops waiting once HTML is parsed, doesn't wait for all images/scripts
+    options.set_capability("pageLoadStrategy", "eager")
+
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -412,8 +421,13 @@ def update_market_data():
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": chosen_ua})
     
+    # Increased internal script timeout
+    driver.set_page_load_timeout(90)
+    driver.set_script_timeout(90)
+    
     try:
         can_scrape = check_scrape_permission(driver)
+        
         if not can_scrape:
              if check_live_holiday(driver):
                 logger.info("🚫 Market is CLOSED (Holiday). Stopping.")
@@ -427,11 +441,9 @@ def update_market_data():
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
         
-        # --- FIXED: REMOVED DOUBLE REFRESH TO PREVENT TIMEOUT ---
-        # The page loads once above. We just need to wait for it.
+        # --- ROBUST WAIT (90s) ---
         try:
-            # Increased timeout to 45s for slow GitHub runners
-            WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
+            WebDriverWait(driver, 90).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except TimeoutException:
             logger.error("❌ TIMEOUT: Option chain table did not load.")
             return
@@ -458,6 +470,7 @@ def update_market_data():
             if label == "m1":
                 m1_month_str = date_obj.strftime("%b")
 
+            # Re-find dropdown (stale element protection)
             dropdown = find_expiry_dropdown(driver)
             if dropdown:
                 switch_expiry(driver, dropdown, val)
