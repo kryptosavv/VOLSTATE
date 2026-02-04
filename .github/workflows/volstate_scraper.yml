@@ -29,9 +29,14 @@ jobs:
         run: |
           pip install selenium pandas numpy webdriver-manager lxml
 
-      - name: Run Engine
-        # Matches your specific filename
-        run: python VOLSTATE_data_engine.py
+      # --- UPDATED SECTION: AUTO-RETRY LOGIC ---
+      - name: Run Engine (with Retry)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3          # Try 3 times before failing
+          retry_on: error          # Retry if the python script crashes
+          command: python VOLSTATE_data_engine.py
 
       - name: Save Database
         run: |
