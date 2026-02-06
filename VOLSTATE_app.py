@@ -631,7 +631,7 @@ def main():
     signals, ctx, curr = run_engine_live(df_sel)
 
     with c2: 
-        st.markdown("""<h1 style='text-align: center; margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'>⚡ VOLSTATE System </h1>""", unsafe_allow_html=True)
+        st.markdown("""<h1 style='text-align: center; margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'> VOLSTATE System </h1>""", unsafe_allow_html=True)
         st.markdown("""<h3 style='text-align: center; margin: 0; padding: 0; color: #aaa; font-size: 16px; font-weight: 400; letter-spacing: 1px;'>Volatility Regime & Carry Integrity System</h3>""", unsafe_allow_html=True)
         
     with c3: 
@@ -654,3 +654,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
