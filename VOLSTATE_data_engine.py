@@ -8,6 +8,7 @@ import json
 import logging
 import random
 import platform
+import sys  # Added for sys.exit()
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from contextlib import contextmanager
@@ -251,7 +252,8 @@ def switch_expiry(driver: webdriver.Chrome, dropdown, value: str) -> bool:
 def extract_page_timestamp(driver: webdriver.Chrome) -> str:
     try:
         src = driver.page_source
-        match = re.search(r"As on\s+([A-Za-z]{3}\s+\d{2},\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+IST)", src)
+        # UPDATED REGEX: Matches "As on 05-Feb-2026 15:30:00 IST"
+        match = re.search(r"As on\s+([0-9]{2}-[A-Za-z]{3}-[0-9]{4}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\s+IST)", src)
         if match: return match.group(1)
         return "Unknown"
     except: return "Error"
@@ -378,7 +380,8 @@ def scrape_table_data(driver: webdriver.Chrome) -> Optional[Dict]:
             "m1_iv": round(avg_iv, 2),
             "skew_index": round(skew_val, 2), 
             "skew_put_avg_9_10_11_iv": round(avg_put_iv_basket, 2),
-            "skew_call_avg_9_10_11_iv": round(avg_call_iv_basket, 2)
+            "skew_call_avg_9_10_11_iv": round(avg_call_iv_basket, 2),
+            "nse_timestamp": page_time_str  # <--- RETURN THE TIMESTAMP
         }
     except Exception as e:
         logger.warning(f"Parse error: {e}")
@@ -397,7 +400,7 @@ def update_market_data():
     # 2. APPLY OS-SPECIFIC FLAGS
     if current_os == "Linux":
         logger.info("   -> Applying Linux/GitHub Actions optimizations...")
-        options.add_argument("--headless=new") # <--- HEADLESS MODE ENABLED
+        options.add_argument("--headless=new") 
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage") 
@@ -407,7 +410,7 @@ def update_market_data():
         
     else:
         logger.info("   -> Applying Windows/Local optimizations...")
-        options.add_argument("--headless=new") # <--- HEADLESS MODE ENABLED FOR WINDOWS TOO
+        options.add_argument("--headless=new") 
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
         options.set_capability("pageLoadStrategy", "normal")
@@ -440,7 +443,7 @@ def update_market_data():
              if check_live_holiday(driver):
                 logger.info("🚫 Market is CLOSED (Holiday). Stopping.")
                 driver.quit()
-                return
+                exit(0) # Normal exit
 
         logger.info("   -> Initializing Session...")
         driver.get(HOME_URL)
@@ -449,35 +452,37 @@ def update_market_data():
         logger.info("   -> Loading Option Chain...")
         driver.get(OPTION_CHAIN_URL)
         
-        # --- ROBUST WAIT (90s) ---
         try:
             WebDriverWait(driver, 90).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except TimeoutException:
             logger.error("❌ TIMEOUT: Option chain table did not load.")
-            driver.execute_script("window.scrollBy(0, 500)")
-            return
+            driver.quit()
+            exit(1) # <--- CRITICAL: FAIL SO GITHUB RETRIES
 
         time.sleep(5) 
 
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: 
             logger.error("❌ Expiry Dropdown not found (FATAL).")
-            return
+            driver.quit()
+            exit(1) # <--- CRITICAL: FAIL SO GITHUB RETRIES
 
         expiries = get_monthly_expiries(driver, dropdown)
         if not expiries: 
             logger.error("❌ No expiries found.")
-            return
+            driver.quit()
+            exit(1) # <--- CRITICAL: FAIL SO GITHUB RETRIES
 
         live_data = {}
-        m1_month_str = ""
+        m1_expiry_date_str = ""
+        nse_raw_timestamp = None
 
         for i, (date_obj, val) in enumerate(expiries):
             label = f"m{i+1}"
             logger.info(f"   -> Scraping {label.upper()} ({date_obj.strftime('%d-%b')})...")
             
             if label == "m1":
-                m1_month_str = date_obj.strftime("%b")
+                m1_expiry_date_str = date_obj.strftime("%d-%b-%Y")
 
             dropdown = find_expiry_dropdown(driver)
             if dropdown:
@@ -485,6 +490,10 @@ def update_market_data():
                 row_data = scrape_table_data(driver)
                 
                 if row_data:
+                    # CAPTURE THE NSE TIMESTAMP FROM SCRAPED DATA
+                    if row_data.get('nse_timestamp') and row_data['nse_timestamp'] not in ["Unknown", "Error"]:
+                        nse_raw_timestamp = row_data['nse_timestamp']
+
                     if label == "m1":
                         live_data.update({
                             'spot_price': row_data['spot'],
@@ -502,11 +511,12 @@ def update_market_data():
                 logger.error("❌ Dropdown lost during iteration.")
 
         live_data['india_vix'] = get_india_vix_nse(driver)
-        live_data['m1_month'] = m1_month_str
+        live_data['m1_month'] = m1_expiry_date_str 
 
         if live_data.get('spot_price', 0) == 0:
             logger.error("❌ Scrape Failed: Spot Price is 0.")
-            return
+            driver.quit()
+            exit(1) # <--- CRITICAL: FAIL SO GITHUB RETRIES
 
         # Backfill
         if live_data.get('m3_iv', 0) == 0:
@@ -528,8 +538,24 @@ def update_market_data():
             elif k != 'm1_month':
                 live_data[k] = round(live_data[k], 2)
 
-        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        today_date = datetime.now().strftime('%Y-%m-%d')
+        # --- PARSE NSE TIMESTAMP OR FALLBACK ---
+        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S') # Default fallback
+        
+        if nse_raw_timestamp:
+            try:
+                # Format: "05-Feb-2026 15:30:00 IST"
+                clean_ts = nse_raw_timestamp.replace(" IST", "").strip()
+                # Use %d-%b-%Y to match "05-Feb-2026"
+                dt_obj = datetime.strptime(clean_ts, "%d-%b-%Y %H:%M:%S") 
+                timestamp_str = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+                today_date = dt_obj.strftime('%Y-%m-%d')
+                logger.info(f"✅ Using NSE Timestamp: {timestamp_str}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse NSE timestamp '{nse_raw_timestamp}': {e}. Using System Time.")
+        else:
+            logger.warning("⚠️ No NSE timestamp found. Using System Time.")
+
+        today_date = timestamp_str.split(" ")[0] # Ensure consistency
         
         cursor.execute("DELETE FROM market_logs WHERE timestamp LIKE ?", (f"{today_date}%",))
         cursor.execute('''
@@ -548,12 +574,15 @@ def update_market_data():
         conn.close()
         
         logger.info(f"✅ DATA SAVED for {today_date}!")
-        logger.info(f"   Spot: {live_data['spot_price']} | M1 Call IV: {live_data['m1_call_iv']:.2f}% | Skew Index: {live_data['skew_index']:.2f}")
+        logger.info(f"   Spot: {live_data['spot_price']} | M1 Expiry: {live_data['m1_month']} | Skew: {live_data['skew_index']:.2f}")
 
     except Exception as e:
         logger.error(f"❌ Main Loop Error: {e}")
-    finally:
         driver.quit()
+        exit(1) # <--- CRITICAL: FAIL SO GITHUB RETRIES
+    finally:
+        try: driver.quit()
+        except: pass
 
 if __name__ == "__main__":
     init_db()
