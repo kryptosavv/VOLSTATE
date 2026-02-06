@@ -61,7 +61,7 @@ st.markdown("""
     .delta-arrow { font-size: 24px; font-weight: bold; }
     .cis-context { font-size: 12px; color: #888; margin-top: 5px; font-style: italic; }
 
-    /* Permission Meter */
+    /* Permission Meter - CSS kept for compatibility but element removed from DOM */
     .perm-meter {
         padding: 10px 15px; 
         border-radius: 8px; 
@@ -382,7 +382,16 @@ def run_engine_live(df):
 
     cis_delta = cis - prev_cis_val
     
-    dte = curr.get('m1_dte', 30)
+    # --- UPDATED DTE CALCULATION ---
+    try:
+        # Calculate DTE: Expiry Date (from m1_month) - Current Data Date (from timestamp)
+        expiry_date = pd.to_datetime(curr['m1_month'], format='%d-%b-%Y')
+        current_data_date = curr['timestamp']
+        dte = (expiry_date - current_data_date).days
+        if dte < 0: dte = 0 # Safety floor
+    except:
+        dte = 30 # Fallback default
+
     signals = {
         't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
         't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%"), 
@@ -446,19 +455,13 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     
     arrow = "<span class='delta-arrow' style='color: #28a745;'>↑</span>" if cis['delta'] > 0.001 else "<span class='delta-arrow' style='color: #dc3545;'>↓</span>" if cis['delta'] < -0.001 else ""
     
-    # 1. Executive Command (UPDATED WITH NEW BANDS & CONTEXT)
+    # 1. Executive Command (UPDATED: REMOVED DECAY METER)
     st.markdown(f"""<div class="exec-box" style="border-color: {cis['color']};">
     <div style="flex: 1;">
         <div style="font-size: 11px; color: #888; font-weight:bold;">CARRY PERMISSION</div>
         <div class="status-badge" style="background-color: {cis['color']};">{cis['label']}</div>
         <div class="cis-score">{cis['score']*100:.0f}% {arrow}</div>
         <div class="cis-context">{cis['context']}</div>
-    </div>
-    <div class="perm-meter"> 
-        <div style="font-size: 11px; color: #888; font-weight:bold;">DECAY METER</div>
-        <div style="font-size: 18px; font-weight: 900; color:{decay['color']};">
-            {decay['label']} ({decay['val']:.2f})
-        </div>
     </div>
     <div style="flex: 1; text-align: right; padding-left: 20px;">
         <div style="font-size: 11px; color: #888; font-weight:bold;">CONVEXITY PERMISSION</div>
@@ -619,7 +622,8 @@ def main():
 
     c1, c2, c3 = st.columns([1, 2, 1])
     with c1: 
-        st.markdown(f"**{df_all.iloc[0]['timestamp'].strftime('%d %b %Y | %H:%M')} IST**")
+        # UPDATED: Only showing the date, time removed
+        st.markdown(f"**{df_all.iloc[0]['timestamp'].strftime('%d %b %Y')}**")
         sel_date = st.date_input("Date", value=df_all['timestamp'].max().date())
     
     df_sel = df_all[df_all['timestamp'].dt.date <= sel_date]
