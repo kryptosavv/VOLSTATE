@@ -4,52 +4,107 @@ def render_documentation_tab():
     # --- CSS: CLEAN CENTERED LAYOUT ---
     st.markdown("""
         <style>
-        /* Center content and limit width for readability */
         .docs-container {
-            max-width: 800px;
+            max-width: 860px;
             margin: 0 auto;
             padding: 20px;
+            color: #c9d1d9; /* Default text color */
         }
         
-        /* Executive Summary Box - Fixed Layout */
-        .exec-box {
+        /* Fixed Executive Box Styling */
+        .doc-exec-box {
             background-color: #0d1117;
             border-left: 5px solid #ffc107;
-            padding: 20px;
+            padding: 25px;
             border-radius: 4px;
             margin-bottom: 30px;
-            color: #c9d1d9;
             font-size: 16px;
             line-height: 1.6;
+            display: flex;
+            flex-direction: column; 
+        }
+        
+        .doc-exec-title {
+            color: #ffc107;
+            font-weight: 900;
+            font-size: 20px;
+            margin-bottom: 15px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            width: 100%;
+            border-bottom: 1px solid rgba(255, 193, 7, 0.2);
+            padding-bottom: 10px;
+            display: block; 
+        }
+        
+        /* Headers */
+        h2 { 
+            margin-top: 60px !important; 
+            margin-bottom: 20px !important; 
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 10px;
+            color: #58a6ff;
+        }
+        
+        h3 {
+            margin-top: 30px !important;
+            color: #c9d1d9;
         }
 
-        /* Table of Contents Styling */
-        .toc-list {
-            list-style: none;
-            padding: 0;
-        }
-        .toc-item {
+        /* Table Styling */
+        table {
+            width: 100%;
+            border-collapse: collapse;
             margin-bottom: 20px;
-            border-bottom: 1px solid #30363d;
-            padding-bottom: 15px;
         }
-        .toc-link {
+        th {
+            background-color: #161b22;
+            color: #ffc107;
+            font-weight: bold;
+            text-align: left;
+            padding: 10px;
+            border-bottom: 2px solid #30363d;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #30363d;
+            vertical-align: top;
+        }
+        tr:hover {background-color: #0d1117;}
+        
+        /* TOC Styling */
+        .toc-box {
+            background-color: #161b22;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            margin-bottom: 40px;
+        }
+        .toc-header {
             font-size: 18px;
             font-weight: bold;
+            color: #c9d1d9;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 5px;
+        }
+        .toc-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+        .toc-item {
+            margin: 8px 0;
+        }
+        .toc-link {
             color: #58a6ff;
             text-decoration: none;
-            display: block;
-            margin-bottom: 5px;
+            font-family: 'Segoe UI', monospace;
+            font-size: 15px;
         }
         .toc-link:hover {
-            color: #ffc107;
             text-decoration: underline;
-        }
-        .toc-desc {
-            font-size: 14px;
-            color: #8b949e;
-            margin-left: 5px;
-            line-height: 1.4;
+            color: #ffc107;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -57,259 +112,318 @@ def render_documentation_tab():
     # --- WRAPPER DIV ---
     st.markdown('<div class="docs-container">', unsafe_allow_html=True)
 
-    # --- 1. FIXED EXECUTIVE SUMMARY ---
+    # --- TITLE ---
+    st.markdown("# 🔐 VOLSTATE SYSTEM — TECHNICAL DOCUMENTATION")
+
+    # --- EXECUTIVE SUMMARY ---
     st.markdown("""
-    # ⚡ VOLSTATE System Documentation
-    
-    <div class="exec-box">
-        <p style="margin: 0;">
-            <b>VOLSTATE</b> is a "permission engine" for short-volatility trading. It does not predict where the market is going. 
-            Instead, it strictly tells you <b>when it is safe to carry risk</b>. It monitors hidden stress signals (like panic hedging and curve inversions) 
-            to prevent the #1 cause of trading losses: overstaying your welcome during a market crash.
+    <div class="doc-exec-box">
+        <div class="doc-exec-title">EXECUTIVE SUMMARY</div>
+        <p>
+            VOLSTATE is a deterministic, regime-aware permission system for volatility trading. 
+            It does not predict markets, forecast volatility, or optimize returns. Its sole purpose is to 
+            decide when it is structurally safe to carry risk and when convexity is justified.
+        </p>
+        <p>
+            The system converts raw volatility structure into explicit regime probabilities, tracks how those 
+            regimes evolve over time, and enforces discipline through two permission scores: the 
+            <strong>Carry Integrity Score (CIS)</strong> and the <strong>Convexity Permission Score (CPS)</strong>. 
+            All trading decisions must flow from these permissions. VOLSTATE is intentionally conservative and 
+            biased toward early exits; it exists to prevent catastrophic losses caused by overstaying in hostile 
+            volatility regimes.
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-    # --- 2. DUMBED-DOWN TABLE OF CONTENTS ---
-    # Using HTML to ensure the specific layout of Link + Description
+    # --- TABLE OF CONTENTS ---
     st.markdown("""
-    <h3 style="border-bottom: 1px solid #444; padding-bottom: 10px; margin-bottom: 20px;">📑 Table of Contents</h3>
-    
-    <ul class="toc-list">
-        <li class="toc-item">
-            <a href="#0-system-overview" class="toc-link">0. System Overview</a>
-            <div class="toc-desc">The high-level logic. No math, just the "what" and "why" of the system.</div>
-        </li>
-        <li class="toc-item">
-            <a href="#1-regime-probability-vector-rpv" class="toc-link">1. Regime Probability Vector (RPV)</a>
-            <div class="toc-desc">The market weather report. It tells you if the environment is sunny (Compression), cloudy (Transition), or stormy (Stress).</div>
-        </li>
-        <li class="toc-item">
-            <a href="#2-regime-dynamics" class="toc-link">2. Regime Dynamics</a>
-            <div class="toc-desc">How fast the weather is changing. Is a storm approaching quickly, or is the sun coming out?</div>
-        </li>
-        <li class="toc-item">
-            <a href="#3-carry-integrity-score-cis" class="toc-link">3. Carry Integrity Score (CIS)</a>
-            <div class="toc-desc">The final Green/Red light. A single score that answers: "Am I allowed to trade right now?"</div>
-        </li>
-        <li class="toc-item">
-            <a href="#4-authority-flow-critical" class="toc-link">4. Authority Flow</a>
-            <div class="toc-desc">The chain of command. The math (CIS) always overrules your gut feeling.</div>
-        </li>
-    </ul>
+    <div class="toc-box">
+        <div class="toc-header">📑 INDEX</div>
+        <ul class="toc-list">
+            <li class="toc-item"><a class="toc-link" href="#0-system-architecture">0. System Architecture</a></li>
+            <li class="toc-item"><a class="toc-link" href="#1-raw-input-space-canonical">1. Raw Input Space (Canonical)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#2-regime-probability-vector-rpv">2. Regime Probability Vector (RPV)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#3-regime-dynamics-momentum-layer">3. Regime Dynamics (Momentum Layer)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#4-carry-integrity-score-cis">4. Carry Integrity Score (CIS)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#5-cis-context-interpretability-layer">5. CIS Context (Interpretability Layer)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#6-convexity-permission-score-cps">6. Convexity Permission Score (CPS)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#7-action-matrix">7. Action Matrix</a></li>
+            <li class="toc-item"><a class="toc-link" href="#8-how-regimes-are-decided-summary">8. How Regimes Are Decided (Summary)</a></li>
+            <li class="toc-item"><a class="toc-link" href="#9-failure-modes">9. Failure Modes</a></li>
+            <li class="toc-item"><a class="toc-link" href="#10-fail-safe-overrides-non-negotiable">10. Fail-Safe Overrides (Non-Negotiable)</a></li>
+        </ul>
+    </div>
     """, unsafe_allow_html=True)
 
-    # --- 3. MAIN DOCUMENTATION BODY ---
-    st.markdown(r"""
-    <hr style="margin-top: 40px; margin-bottom: 40px; border-color: #444;">
+    # =========================
+    # 0. SYSTEM ARCHITECTURE
+    # =========================
+    st.markdown("## 0. SYSTEM ARCHITECTURE")
+    st.markdown("""
+    VOLSTATE operates in a strict, non-overridable hierarchy. No layer may bypass or override the one above it.
+    """)
+    st.latex(r"""
+    \text{Raw Inputs} \rightarrow \text{Sensors} \rightarrow \text{Likelihoods} \rightarrow \text{RPV} \rightarrow \text{Dynamics} \rightarrow (\text{CIS}, \text{CPS}) \rightarrow \text{Trades}
+    """)
 
-    <a id="0-system-overview"></a>
-    # 0. SYSTEM OVERVIEW
+    # =========================
+    # 1. RAW INPUT SPACE
+    # =========================
+    st.markdown("## 1. RAW INPUT SPACE (CANONICAL)")
+    st.markdown("All calculations are front-month anchored, regardless of which expiry is traded.")
 
-    <a id="01-what-volstate-is"></a>
-    ### 0.1 What VOLSTATE Is
-    VOLSTATE is a regime-aware risk control and discipline enforcement system designed specifically for:
-    * Short volatility strategies
-    * Volatility Risk Premium (VRP) harvesting
-    * Monthly option cycles
-    * 45 → 21 DTE holding windows
+    st.markdown("""
+    | Variable | Symbol | Meaning |
+    | :--- | :---: | :--- |
+    | Spot Price | $S_t$ | Index level |
+    | M1 ATM IV | $IV_1$ | Front-month implied volatility |
+    | M2 ATM IV | $IV_2$ | Next-month implied volatility |
+    | M3 ATM IV | $IV_3$ | Far-month implied volatility |
+    | ATM Straddle | $STR_t$ | Price of ATM straddle |
+    | Skew Index | $SK_t$ | Downside tail demand |
+    """)
 
-    **VOLSTATE does not forecast markets.**
-    VOLSTATE governs when volatility carry is structurally permitted.
+    st.markdown("### Derived Quantities")
+    st.latex(r"""
+    \begin{aligned}
+    \Delta IV_1 &= IV_{1,t} - IV_{1,t-1} \\
+    \Delta STR\% &= \frac{STR_t - STR_{t-1}}{STR_{t-1}} \times 100 \\
+    \Delta SK &= SK_t - SK_{t-1}
+    \end{aligned}
+    """)
 
-    <a id="03-architectural-layers"></a>
-    ### 0.3 Architectural Layers
+    # =========================
+    # 2. RPV
+    # =========================
+    st.markdown("## 2. REGIME PROBABILITY VECTOR (RPV)")
+    st.markdown("### Purpose")
+    st.markdown("Diagnose the current volatility regime mixture (structure only). Markets are never assumed to be in a single regime.")
 
-    | Layer | Purpose |
+    st.latex(r"""
+    RPV = \{P_C, P_T, P_E, P_S\}, \quad \sum_r P_r = 1
+    """)
+
+    st.markdown("""
+    | Regime | Symbol | Meaning |
+    | :--- | :---: | :--- |
+    | **Compression** | C | Decay dominates |
+    | **Transition** | T | Structure weakening |
+    | **Expansion** | E | Directional volatility |
+    | **Stress** | S | Panic / tail risk |
+    """)
+
+    st.markdown("### A. RPV Inputs (Exhaustive)")
+    st.markdown("""
+    | Signal | Description | Formula | Weight | Why it matters |
+    | :--- | :--- | :--- | :---: | :--- |
+    | **ATM IV Momentum** | Forward vol repricing | $\Delta IV_1$ | 1.2 | IV reprices before spot |
+    | **Straddle % Change** | Theta efficiency | $\Delta STR\%$ | 1.2 | Closest proxy to real carry P&L |
+    | **Back-Month Spread** | Fear propagation | $(IV_2 - IV_{2,-1}) - \Delta IV_1$ | 1.0 | Distinguishes local vs systemic |
+    | **Term Structure** | Systemic stress | $IV_3 - IV_1$ | 1.0 | Inversion = capital flight |
+    | **Skew Change** | Tail hedging | $\Delta SK$ | 1.4 | Smart money panic signal |
+    | **Spot–Vol Disconnect** | Hidden panic | $|\Delta S_t| < \epsilon \land \Delta IV_1 > \theta$ | 0.8 | Non-price fear |
+    """)
+    st.caption("*Design note: Weights are intentionally asymmetric. Signals closest to dealer P&L reality (straddle, skew) dominate.*")
+
+    st.markdown("### B. Signal → Regime Probability Mapping")
+    st.markdown("Each signal $i$ emits regime likelihoods:")
+    st.latex(r"L_{i,r} \in [0,1]")
+    
+    st.markdown("Weighted aggregation:")
+    st.latex(r"Score_r = \sum_i w_i \cdot L_{i,r}")
+    
+    st.markdown("Normalization:")
+    st.latex(r"RPV_r = \frac{Score_r}{\sum_r Score_r}")
+
+    st.markdown("### C. Explicit Regime Logic")
+    st.markdown("""
+    | Regime | Structural Signature |
     | :--- | :--- |
-    | **Raw Market Data** | Spot, IVs, Straddles, Skew |
-    | **Likelihood Sensors** | Raw data → fuzzy structural signals |
-    | **RPV Engine** | Diagnose market regime mixture |
-    | **Regime Dynamics** | Momentum & acceleration |
-    | **CIS Engine** | Compress diagnostics into action |
-    | **Theta Cycle Controller** | Enforces SOP |
+    | **Compression** | IV flat/down + straddles decaying + positive slope |
+    | **Transition** | Mixed signals + early IV upticks |
+    | **Expansion** | IV rising + straddles expanding |
+    | **Stress** | Front IV spike + straddle explosion + inversion |
+    """)
+    st.info("**Important:** RPV never forces a single regime. Mixtures are intentional.")
 
-    ---
+    # =========================
+    # 3. REGIME DYNAMICS
+    # =========================
+    st.markdown("## 3. REGIME DYNAMICS (MOMENTUM LAYER)")
+    st.markdown("### Purpose")
+    st.markdown("Detect where regimes are *heading*, not just where they are.")
 
-    <a id="1-regime-probability-vector-rpv"></a>
-    # 1. REGIME PROBABILITY VECTOR (RPV)
+    st.markdown("""
+    | Input | Formula | Why |
+    | :--- | :--- | :--- |
+    | **RPV Drift** | $RPV_r(t) - RPV_r(t-k)$ | Velocity of change |
+    | **Stress Acceleration** | $\Delta S_t > \Delta S_{t-1}$ | Convex loss risk |
+    | **Expansion Comparison** | $S > 0.6E$ | Disorder dominance |
+    """)
 
-    ### 1.1 Definition
-    The Regime Probability Vector (RPV) represents a probability mixture of four volatility regimes:
-
-    $$
-    RPV = \{P_C, P_T, P_E, P_S\}, \quad \sum_i P_i = 1
-    $$
-
-    <a id="14-likelihood-sensors-structural-core"></a>
-    ### 1.4 Likelihood Sensors (Structural Core)
-    Each sensor emits regime likelihoods:
-    $$
-    L_{i,r} \in [0,1]
-    $$
-    These likelihoods are **Deterministic, Piecewise-linear, Clipped, and Non-Bayesian**. This design avoids distributional assumptions and overfitting.
-
-    #### S1 — ATM IV Momentum
-    **Input:**
-    $$
-    \Delta IV_1 = IV_{1,t} - IV_{1,t-1}
-    $$
-
-    **Likelihood Mapping:**
-    $$
-    \begin{aligned}
-    L_{IV,C} &= \max\left(0, 1 - \frac{\Delta IV_1}{0.5}\right) \\
-    L_{IV,T} &= \text{clip}\left(\frac{\Delta IV_1}{0.6}, 0, 1\right) \\
-    L_{IV,E} &= \text{clip}\left(\frac{\Delta IV_1}{1.0}, 0, 1\right) \\
-    L_{IV,S} &= \text{clip}\left(\frac{\Delta IV_1 - 0.8}{1.2}, 0, 1\right)
-    \end{aligned}
-    $$
-
-    **Interpretation:**
-    * Compression collapses quickly as IV rises
-    * Stress activates only after large IV shocks
-    * Expansion tolerates moderate IV increases
-
-    #### S2 — Straddle Decay (Theta Efficiency)
-    **Input:**
-    $$
-    \Delta STR\% = \frac{STR_t - STR_{t-1}}{STR_{t-1}} \times 100
-    $$
-
-    **Likelihood Mapping:**
-    $$
-    \begin{aligned}
-    L_{STR,C} &= \begin{cases} 1 & \text{if } \Delta STR\% < -0.2 \\ 0.2 & \text{otherwise} \end{cases} \\
-    L_{STR,T} &= \text{clip}\left(\frac{\Delta STR\% + 0.2}{0.4}, 0, 1\right) \\
-    L_{STR,E} &= \text{clip}\left(\frac{\Delta STR\% + 0.1}{0.6}, 0, 1\right) \\
-    L_{STR,S} &= \text{clip}\left(\frac{\Delta STR\% - 0.8}{1.0}, 0, 1\right)
-    \end{aligned}
-    $$
-
-    **Interpretation:**
-    * Compression requires actual decay
-    * Stress only triggers on straddle expansion
-    * This is the closest proxy to live carry P&L
-
-    #### S6 — Spot–Vol Disconnect
-    **Condition:**
-    $$
-    (|\Delta S| < 0.1\%) \land (\Delta IV_1 > 0.5)
-    $$
-
-    **Likelihood Mapping:**
-    $$
-    \begin{aligned}
-    L_{DISC,C} &= 0 \\
-    L_{DISC,T} &= \begin{cases} 0.4 & \text{if disconnect} \\ 0.6 & \text{otherwise} \end{cases} \\
-    L_{DISC,E} &= \begin{cases} 0.7 & \text{if disconnect} \\ 0.4 & \text{otherwise} \end{cases} \\
-    L_{DISC,S} &= \begin{cases} 0.9 & \text{if disconnect} \\ 0.2 & \text{otherwise} \end{cases}
-    \end{aligned}
-    $$
-
-    **Interpretation:**
-    * Penalizing, not dominant
-    * Strong bias toward Stress when present
-
-    <a id="16-rpv-weighting"></a>
-    ### 1.6 RPV Weighting
-    $$
-    \mathbf{w} = \begin{cases} w_{IV} = 1.2 \\ w_{STR} = 1.2 \\ w_{BM} = 1.0 \\ w_{TS} = 1.0 \\ w_{SK} = 1.4 \\ w_{DISC} = 0.8 \end{cases}
-    $$
-    *Weights favor capital survival, not early responsiveness.*
-
-    ---
-
-    <a id="2-regime-dynamics"></a>
-    # 2. REGIME DYNAMICS
-
-    ### 2.1 RPV Drift
-    $$
-    Drift_r = RPV_{r,t} - RPV_{r,t-k}
-    $$
-    *Measures velocity, not level. Positive values indicate increasing probability.*
-
-    ### 2.2 Pre-Stress Detector
-    Triggered when **all** hold:
+    st.markdown("### Pre-Stress Trigger")
+    st.markdown("Triggers if **ALL** of the following hold:")
+    st.markdown("""
     1.  Stress > 20%
-    2.  Stress slope > 0.08
+    2.  Stress drift > 0.08
     3.  Stress accelerating
     4.  Stress > 0.6 × Expansion
+    """)
+    st.warning("This is an early-exit engine, not a crash predictor.")
 
-    *Early crash sensor.*
+    # =========================
+    # 4. CARRY INTEGRITY SCORE (CIS)
+    # =========================
+    st.markdown("## 4. CARRY INTEGRITY SCORE (CIS)")
+    st.markdown("### Purpose")
+    st.markdown("Binary question: **Is short gamma structurally allowed?**")
 
-    ---
+    st.markdown("### CIS Inputs")
+    st.markdown("""
+    | Component | Formula | Weight | Why |
+    | :--- | :--- | :---: | :--- |
+    | **Structural Carry** | $C + T$ | +0.40 | Carry survives only in calm regimes |
+    | **Theta Efficiency** | $\hat{\\theta} = \text{clip}(-\Delta STR\%/0.25)$ | +0.20 | P&L validation |
+    | **Carry Insulation** | $\hat{K} = \text{clip}((IV_2 - IV_1)/1.0)$ | +0.15 | Back-month buffer |
+    | **Stress Level** | $-S$ | -0.50 | Convex losses dominate |
+    | **Stress Drift** | $-\text{clip}(\Delta S/0.10)$ | -0.30 | Prevents overstaying |
+    | **Stress Accel** | $-A$ | -0.20 | Kill-switch bias |
+    """)
 
-    <a id="3-carry-integrity-score-cis"></a>
-    # 3. CARRY INTEGRITY SCORE (CIS)
+    st.latex(r"""
+    CIS = 0.40(C+T) + 0.20\hat{\theta} + 0.15\hat{K} - 0.50S - 0.30\hat{D} - 0.20A
+    """)
+    st.caption("Clipped to [-1, +1]")
 
-    ### 3.1 Definition
-    $$
-    CIS \in [-1, +1]
-    $$
-    **Answers:** *Am I allowed to carry short gamma right now?*
-
-    ### 3.2 CIS Inputs
-
-    **Structural**
-    * $C$: Compression probability
-    * $T$: Transition probability
-    * $S$: Stress probability
-
-    **Performance**
-    $$
-    \hat{\theta} = \text{clip}\left(\frac{-\Delta STR\%}{0.25}, -1, 1\right)
-    $$
-
-    $$
-    \hat{K} = \text{clip}\left(\frac{IV_2 - IV_1}{1.0}, -1, 1\right)
-    $$
-
-    **Instability**
-    $$
-    \hat{D} = \text{clip}\left(\frac{\Delta Stress}{0.10}, 0, 1\right)
-    $$
-
-    $$
-    A = \begin{cases} 1 & \text{if accelerating} \\ 0 & \text{otherwise} \end{cases}
-    $$
-
-    <a id="33-cis-formula-corrected"></a>
-    ### 3.3 CIS Formula (Corrected)
-    $$
-    \boxed{
-    CIS = + 0.40(C + T) + 0.20\hat{\theta} + 0.15\hat{K} - 0.50S - 0.30\hat{D} - 0.20A
-    }
-    $$
-    *Clipped to $[-1, +1]$.*
-
-    ### 3.4 CIS Interpretation
-
-    | CIS | Action |
+    st.markdown("### CIS Permission Bands")
+    st.markdown("""
+    | CIS | Meaning |
     | :--- | :--- |
-    | **> +0.35** | Full carry |
-    | **+0.15 to +0.35** | Reduce size |
-    | **0 to +0.15** | No new risk |
-    | **−0.25 to 0** | Exit bias |
-    | **< −0.25** | Immediate exit |
+    | **> 0.35** | Full carry |
+    | **0.15 → 0.35** | Controlled carry |
+    | **-0.05 → 0.15** | Tolerance only |
+    | **< -0.05** | No carry |
+    """)
+    st.markdown("*Flat CIS ≠ inactivity. It means maintenance only, no expansion.*")
 
-    ---
+    # =========================
+    # 5. CIS CONTEXT
+    # =========================
+    st.markdown("## 5. CIS CONTEXT (INTERPRETABILITY LAYER)")
+    st.markdown("### Purpose")
+    st.markdown("Explain *why* CIS is low or high. This prevents false panic exits.")
 
-    <a id="4-authority-flow-critical"></a>
-    # 4. AUTHORITY FLOW (CRITICAL)
+    st.markdown("""
+    | Priority | Condition | Context Label |
+    | :---: | :--- | :--- |
+    | 1 | Stress > 20% | Rising stress probability |
+    | 2 | Stress drift > 0.08 | Accelerating stress drift |
+    | 3 | Straddle decay stalled | Theta breakdown |
+    | 4 | IV repricing | Front-month repricing |
+    | 5 | Term erosion | Curve deterioration |
+    | 6 | Else | Carry structure stable |
+    """)
 
-    $$
-    \boxed{ RPV \rightarrow CIS \rightarrow ACTION }
-    $$
+    # =========================
+    # 6. CONVEXITY PERMISSION SCORE (CPS)
+    # =========================
+    st.markdown("## 6. CONVEXITY PERMISSION SCORE (CPS)")
+    st.markdown("### Purpose")
+    st.markdown("Decide when owning gamma is justified.")
 
-    1.  **RPV** describes structure.
-    2.  **CIS** governs permission.
-    3.  **Actions** follow SOP.
+    st.markdown("""
+    | Input | Formula | Weight | Why |
+    | :--- | :--- | :---: | :--- |
+    | **Expansion + Stress** | $E + S$ | 0.40 | Convexity needs disorder |
+    | **Gamma Effectiveness** | $\text{clip}(\Delta STR\%/0.30)$ | 0.25 | Must actually pay |
+    | **Term Inversion** | $-(IV_3 - IV_1)$ | 0.15 | Crash confirmation |
+    | **Lag Convexity** | $IV_2 - IV_1$ | 0.10 | Delayed repricing |
+    | **Skew Accel** | Boolean | 0.10 | Tail demand |
+    """)
+    st.caption("CPS is capped to avoid overpaying for convexity.")
 
-    ## 5. FINAL PHILOSOPHY
-    VOLSTATE does not predict volatility.
-    It enforces discipline on those who profit from selling it.
+    # =========================
+    # 7. ACTION MATRIX
+    # =========================
+    st.markdown("## 7. ACTION MATRIX")
+    st.markdown("""
+    | CIS | CPS | Action |
+    | :---: | :---: | :--- |
+    | **+** | **-** | Carry primary |
+    | **+** | **+** | Carry + convex overlay |
+    | **-** | **+** | Convexity primary |
+    | **-** | **-** | Flat / hedge only |
+    """)
+
+    # =========================
+    # 8. SUMMARY
+    # =========================
+    st.markdown("## 8. HOW REGIMES ARE DECIDED (SUMMARY)")
+    st.markdown("""
+    * **RPV** defines regime
+    * **Dynamics** define trajectory
+    * **CIS/CPS** define permission
+    """)
+
+    st.markdown("""
+    | Situation | Interpretation |
+    | :--- | :--- |
+    | Compression high, Stress flat | Stable carry |
+    | Transition rising, Stress drifting | Early danger |
+    | Expansion dominant | Convexity viable |
+    | Stress accelerating | Immediate exit |
+    """)
+
+    # =========================
+    # 9. FAILURE MODES (NEW)
+    # =========================
+    st.markdown("## 9. FAILURE MODES")
+    st.markdown("Explicit acknowledgement of where the system may lag or fail, and the accepted design trade-offs.")
+
+    st.markdown("""
+    | Failure Mode | Description | Potential Impact | Mitigation Controls | Design Acceptance |
+    | :--- | :--- | :--- | :--- | :--- |
+    | **Lag in Ultra-Fast Shock Events** | System operates on end-of-interval volatility structure. Sudden intraday or overnight gaps may occur before signals update. | CIS may remain permissive briefly before shock. Initial loss may occur prior to enforced exit. | • Event-based overrides<br>• Gap-size fail-safes<br>• Conservative sizing by design | Intentional trade-off. Exiting before structure changes would require prediction, which is explicitly avoided. |
+    | **False Negatives in Low-Volatility Grind** | Prolonged suppressed volatility with mild deterioration. Structural decay may be slow and non-disruptive. | Lower realized Sharpe. Delayed exits from gradually degrading carry. | • Stress drift penalties<br>• CIS temporal persistence rules | Survivability prioritized over smooth or optimal returns. |
+    | **False Positives from Macro Hedging** | Temporary IV / skew elevation from hedging flows. No follow-through into realized volatility. | Premature CIS decline. Early exit from otherwise viable carry. | • Multi-sensor confirmation requirement<br>• Regime mixture representation instead of binary states | Early exit preferred to overstaying during latent stress. |
+    | **No Directional Alpha Awareness** | No price forecasts, trends, or directional indicators used. Volatility structure only. | Missed opportunities where direction is clear but vol is neutral. | None (explicitly out of scope). | Deliberate exclusion. System governs risk, not return maximization. |
+    | **Dependence on Volatility Data Quality** | Relies on IV, straddle, and skew aggregates. Assumes consistent and reliable market data. | Temporary distortion in regime probabilities. Incorrect CIS / CPS readings. | • Cross-sensor redundancy<br>• Weighted aggregation<br>• CIS/CPS conflict warnings | Data integrity is a prerequisite for all quantitative systems. |
+    | **Compression Misclassification under Suppressed Volatility** | Heavy volatility selling or structural overwriting. Artificially stable surfaces mask underlying risk. | Carry permitted longer than economically ideal. | • Stress drift monitoring<br>• Back-month propagation checks | Accepted trade-off in artificially controlled markets. |
+    """)
+
+    # =========================
+    # 10. FAIL-SAFE OVERRIDES
+    # =========================
+    st.markdown("## 10. FAIL-SAFE OVERRIDES (NON-NEGOTIABLE)")
+    
+    st.markdown("### A. Structural Overrides")
+    st.markdown("""
+    * **Stress ≥ 35%:** Force no carry.
+    * **M2 < M1 + IV spike:** Cut size 50%.
+    * **Pre-Stress Trigger:** Exit carry.
+    """)
+
+    st.markdown("### B. Event Overrides")
+    st.markdown("""
+    * **RBI / Budget / CPI:** Freeze entries.
+    * **Overnight gap > 1.5σ:** Reduce exposure.
+    """)
+
+    st.markdown("### C. Temporal Overrides")
+    st.markdown("""
+    * **CIS < 0 for 2 days:** Exit.
+    * **CIS oscillates ±0.1 for 5 days:** Reduce size.
+    """)
+
+    st.markdown("### D. Human Override Rule")
+    st.warning("CIS and CPS override conviction, backtests, and narratives.")
+
+    # --- FINAL STATEMENT ---
+    st.markdown("""
+    <div style="text-align: center; margin-top: 50px; padding: 20px; border-top: 1px solid #30363d; color: #8b949e;">
+        <em>"VOLSTATE is not designed to make trading exciting. It is designed to make survival inevitable."</em>
+    </div>
     """, unsafe_allow_html=True)
 
-    # --- CLOSE WRAPPER DIV ---
+    # --- END WRAPPER ---
     st.markdown('</div>', unsafe_allow_html=True)
