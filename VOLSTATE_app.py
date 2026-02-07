@@ -383,14 +383,22 @@ def run_engine_live(df):
     cis_delta = cis - prev_cis_val
     
     # --- UPDATED DTE CALCULATION ---
+    m1_dte, m2_dte = 0, 0
     try:
-        # Calculate DTE: Expiry Date (from m1_month) - Current Data Date (from timestamp)
-        expiry_date = pd.to_datetime(curr['m1_month'], format='%d-%b-%Y')
         current_data_date = curr['timestamp']
-        dte = (expiry_date - current_data_date).days
-        if dte < 0: dte = 0 # Safety floor
+        # M1 DTE
+        if pd.notnull(curr.get('m1_month')):
+            expiry_date_m1 = pd.to_datetime(curr['m1_month'], format='%d-%b-%Y')
+            m1_dte = (expiry_date_m1 - current_data_date).days
+            if m1_dte < 0: m1_dte = 0
+        
+        # M2 DTE
+        if pd.notnull(curr.get('m2_month')):
+            expiry_date_m2 = pd.to_datetime(curr['m2_month'], format='%d-%b-%Y')
+            m2_dte = (expiry_date_m2 - current_data_date).days
+            if m2_dte < 0: m2_dte = 0
     except:
-        dte = 30 # Fallback default
+        m1_dte = 30 # Fallback default
 
     signals = {
         't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
@@ -412,7 +420,7 @@ def run_engine_live(df):
     ctx = {
         'regime': dom, 'color': colors.get(dom, "#888"), 'confidence': "HIGH" if rpv[dom] > 0.55 else "MEDIUM",
         'rpv': rpv, 'risk': derive_risk_posture(rpv), 'drivers': [k for k,v in lhs.items() if v[dom]>0.6], 'counterforces': [k for k,v in lhs.items() if v[dom]<0.3],
-        'is_roll': dte >= 28, 'is_late': dte <= 7, 'dte': dte, 
+        'is_roll': m1_dte >= 28, 'is_late': m1_dte <= 7, 'm1_dte': m1_dte, 'm2_dte': m2_dte,
         'cis': {'score': cis, 'label': band_label, 'color': band_color, 'delta': cis_delta, 'context': context_label},
         'cps': {'score': cps, 'label': get_cps_status(cps)[0], 'color': get_cps_status(cps)[1]},
         'decay': {'val': decay_val, 'label': decay_label, 'color': decay_color},
@@ -503,7 +511,13 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     with c2: s=signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2])
     with c3: s=signals['t4']; render_tile("CARRY INSULATION", s[0], s[1], s[2], True)
     with c4: s=signals['t5']; render_tile("HEDGING PRESSURE", s[0], s[1], s[2])
-    st.markdown(f"""<div class="mini-diag"><span>SPOT: {curr['spot_price']:.0f}</span><span>ATM IV: {curr['m1_iv']:.2f}%</span><span>STRADDLE: {curr['m1_straddle']:.0f}</span><span>DTE: {ctx['dte']}</span></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="mini-diag">
+        <span>SPOT: {curr['spot_price']:.0f}</span>
+        <span>ATM IV: {curr['m1_iv']:.2f}%</span>
+        <span>STRADDLE: {curr['m1_straddle']:.0f}</span>
+        <span>M1 DTE: {ctx['m1_dte']}</span>
+        <span>M2 DTE: {ctx['m2_dte']}</span>
+    </div>""", unsafe_allow_html=True)
 
     # --- REGIME DYNAMICS (NEW SECTION) ---
     st.markdown('<div class="section-header">🔍 Regime Dynamics & Stability</div>', unsafe_allow_html=True)
@@ -620,9 +634,11 @@ def main():
     df_all = load_data(300) 
     if len(df_all) < 5: st.error("⚠️ Not enough data found."); st.stop()
 
-    c1, c2, c3 = st.columns([1, 2, 1])
+    # --- LAYOUT ADJUSTMENT FOR CENTERED SUBTEXT ---
+    c1, c2, c3 = st.columns([1, 6, 1]) # Make middle column wider for centering
+    
     with c1: 
-        # UPDATED: Only showing the date, time removed
+        # Left side: Date & Picker
         st.markdown(f"**{df_all.iloc[0]['timestamp'].strftime('%d %b %Y')}**")
         sel_date = st.date_input("Date", value=df_all['timestamp'].max().date())
     
@@ -631,15 +647,27 @@ def main():
     signals, ctx, curr = run_engine_live(df_sel)
 
     with c2: 
-        st.markdown("""<h1 style='text-align: center; margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'> VOL⚡TATE System </h1>""", unsafe_allow_html=True)
-        st.markdown("""<h3 style='text-align: center; margin: 0; padding: 0; color: #aaa; font-size: 16px; font-weight: 400; letter-spacing: 1px;'>Volatility Regime & Carry Integrity System</h3>""", unsafe_allow_html=True)
+        # Center: Title & Subtext
+        st.markdown("""
+            <div style='text-align: center;'>
+                <h1 style='margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'>
+                    VOL⚡TATE System
+                </h1>
+                <h3 style='margin: 5px 0 0 0; padding: 0; color: #aaa; font-size: 16px; font-weight: 400; letter-spacing: 1px;'>
+                    Volatility Regime & Carry Integrity System
+                </h3>
+            </div>
+        """, unsafe_allow_html=True)
         
     with c3: 
-        st.markdown('<div style="text-align: right;">', unsafe_allow_html=True)
+        # Right side: Badges
+        st.markdown('<div style="text-align: right; margin-top: 10px;">', unsafe_allow_html=True)
         if ctx['is_roll']: st.markdown('<span class="pill pill-yellow">ROLLOVER</span>', unsafe_allow_html=True)
         elif ctx['is_late']: st.markdown('<span class="pill pill-orange">LATE CYCLE</span>', unsafe_allow_html=True)
         else: st.markdown('<span class="pill pill-gray">MID CYCLE</span>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True) # Spacer
 
     tab_dash, tab_docs = st.tabs(["📊 DASHBOARD", "📘 DOCUMENTATION"])
 
@@ -654,5 +682,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
