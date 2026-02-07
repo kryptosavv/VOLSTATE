@@ -70,6 +70,7 @@ def migrate_db(conn):
         'skew_put_avg_9_10_11_iv': 'REAL',
         'skew_call_avg_9_10_11_iv': 'REAL',
         'm1_month': 'TEXT',
+        'm2_month': 'TEXT',  # <--- ADDED M2 COLUMN
         'skew_index': 'REAL',
         'm1_iv': 'REAL'
     }
@@ -97,7 +98,8 @@ def init_db():
                 skew_call_avg_9_10_11_iv REAL,
                 skew_index REAL,
                 india_vix REAL,
-                m1_month TEXT
+                m1_month TEXT,
+                m2_month TEXT  -- <--- ADDED M2 COLUMN
             )
         ''')
         migrate_db(conn)
@@ -475,6 +477,7 @@ def update_market_data():
 
         live_data = {}
         m1_expiry_date_str = ""
+        m2_expiry_date_str = "" # <--- NEW VAR FOR M2
         nse_raw_timestamp = None
 
         for i, (date_obj, val) in enumerate(expiries):
@@ -483,6 +486,8 @@ def update_market_data():
             
             if label == "m1":
                 m1_expiry_date_str = date_obj.strftime("%d-%b-%Y")
+            elif label == "m2": # <--- CAPTURE M2 DATE
+                m2_expiry_date_str = date_obj.strftime("%d-%b-%Y")
 
             dropdown = find_expiry_dropdown(driver)
             if dropdown:
@@ -511,7 +516,8 @@ def update_market_data():
                 logger.error("❌ Dropdown lost during iteration.")
 
         live_data['india_vix'] = get_india_vix_nse(driver)
-        live_data['m1_month'] = m1_expiry_date_str 
+        live_data['m1_month'] = m1_expiry_date_str
+        live_data['m2_month'] = m2_expiry_date_str # <--- STORE M2 DATE
 
         if live_data.get('spot_price', 0) == 0:
             logger.error("❌ Scrape Failed: Spot Price is 0.")
@@ -529,13 +535,14 @@ def update_market_data():
         schema_keys = [
             'spot_price', 'm1_straddle', 'm1_call_iv', 'm1_put_iv', 'm1_iv', 
             'm2_iv', 'm3_iv', 'skew_put_avg_9_10_11_iv', 'skew_call_avg_9_10_11_iv', 
-            'skew_index', 'india_vix', 'm1_month'
+            'skew_index', 'india_vix', 'm1_month', 'm2_month' # <--- ADDED M2 TO KEYS
         ]
         
         for k in schema_keys: 
             if k not in live_data: 
-                live_data[k] = 0.00 if k != 'm1_month' else ""
-            elif k != 'm1_month':
+                # <--- UPDATED CHECK FOR BOTH MONTH COLUMNS
+                live_data[k] = 0.00 if k not in ['m1_month', 'm2_month'] else ""
+            elif k not in ['m1_month', 'm2_month']:
                 live_data[k] = round(live_data[k], 2)
 
         # --- PARSE NSE TIMESTAMP OR FALLBACK ---
@@ -558,23 +565,25 @@ def update_market_data():
         today_date = timestamp_str.split(" ")[0] # Ensure consistency
         
         cursor.execute("DELETE FROM market_logs WHERE timestamp LIKE ?", (f"{today_date}%",))
+        
+        # --- UPDATED INSERT STATEMENT WITH M2 ---
         cursor.execute('''
             INSERT OR REPLACE INTO market_logs 
             (timestamp, spot_price, m1_straddle, m1_call_iv, m1_put_iv, m1_iv, m2_iv, m3_iv, 
-             skew_put_avg_9_10_11_iv, skew_call_avg_9_10_11_iv, skew_index, india_vix, m1_month)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             skew_put_avg_9_10_11_iv, skew_call_avg_9_10_11_iv, skew_index, india_vix, m1_month, m2_month)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             timestamp_str, live_data['spot_price'], live_data['m1_straddle'], 
             live_data['m1_call_iv'], live_data['m1_put_iv'], live_data['m1_iv'],
             live_data['m2_iv'], live_data['m3_iv'], 
             live_data['skew_put_avg_9_10_11_iv'], live_data['skew_call_avg_9_10_11_iv'],
-            live_data['skew_index'], live_data['india_vix'], live_data['m1_month']
+            live_data['skew_index'], live_data['india_vix'], live_data['m1_month'], live_data['m2_month']
         ))
         conn.commit()
         conn.close()
         
         logger.info(f"✅ DATA SAVED for {today_date}!")
-        logger.info(f"   Spot: {live_data['spot_price']} | M1 Expiry: {live_data['m1_month']} | Skew: {live_data['skew_index']:.2f}")
+        logger.info(f"   Spot: {live_data['spot_price']} | M1: {live_data['m1_month']} | M2: {live_data['m2_month']}")
 
     except Exception as e:
         logger.error(f"❌ Main Loop Error: {e}")
