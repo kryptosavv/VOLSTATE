@@ -15,8 +15,53 @@ except ImportError:
     def render_documentation_tab():
         st.error("VOLSTATE_docs.py not found. Please ensure the file exists in the same directory.")
 
-# --- CONFIG ---
+# --- CONFIG & CONSTANTS ---
 DB_NAME = "market_data.db"
+NORMALIZATION_UNIT = 100_000  # ₹1L Constant
+
+# --- GREEK LIMITS (THE CONSTITUTION) ---
+GREEK_LIMITS = {
+    "COMPRESSION": {
+        "delta": 150,    # |Delta| >= 150 
+        "gamma": -200,   # Max short gamma
+        "vega": -300,    # Max short vega
+        "theta": 200     # Min theta income
+    },
+    "TRANSITION": {
+        "delta": 100,
+        "gamma": -100, 
+        "vega": -100, 
+        "theta": 0       
+    },
+    "EXPANSION": {
+        "delta": 200,   
+        "gamma": 150,   
+        "vega": 300,    
+        "theta": -100   
+    },
+    "STRESS": {
+        "delta": 100,   
+        "gamma": 250,   
+        "vega": 500,    
+        "theta": None    
+    }
+}
+
+# --- STRESS ENGINE SETTINGS ---
+DOMINANT_MAP = {
+    "CHOP": "gamma",
+    "TREND_UP": "delta",
+    "TREND_DN": "delta",
+    "VOL": "vega",
+    "TIME": "theta"
+}
+
+VOL_SHOCK = {
+    "COMPRESSION": 2,
+    "TRANSITION": 3,
+    "EXPANSION": 4,
+    "STRESS": 6
+}
 
 st.set_page_config(
     page_title="VOLSTATE System", 
@@ -61,7 +106,7 @@ st.markdown("""
     .delta-arrow { font-size: 24px; font-weight: bold; }
     .cis-context { font-size: 12px; color: #888; margin-top: 5px; font-style: italic; }
 
-    /* Permission Meter - CSS kept for compatibility but element removed from DOM */
+    /* Permission Meter */
     .perm-meter {
         padding: 10px 15px; 
         border-radius: 8px; 
@@ -90,6 +135,16 @@ st.markdown("""
     .tile-header { font-size: 13px; color: #888; text-transform: uppercase; font-weight: 600; }
     .tile-value { font-size: 24px; font-weight: 800; margin: 2px 0; }
     .tile-sub { font-size: 12px; font-family: monospace; color: #aaa; }
+    
+    /* Greek Manager Tiles */
+    .greek-tile { 
+        background-color: #0d1117; 
+        border-left: 4px solid #555; 
+        border-radius: 4px; 
+        padding: 15px; 
+        margin-bottom: 10px; 
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
     
     /* Utility */
     .text-green { color: #28a745; } .text-amber { color: #ffc107; } .text-red { color: #dc3545; } .text-gray { color: #888; }
@@ -222,8 +277,6 @@ def compute_rpv(curr, prev, prev2):
     total = sum(scores.values())
     return {r: (scores[r]/total if total > 0 else 0) for r in REGIMES}, lhs
 
-def regime_entropy(rpv): return -sum(p * np.log(p + 1e-9) for p in rpv.values())
-
 def derive_risk_posture(rpv):
     if rpv["STRESS"] > 0.20: h = ("MANDATORY", "#dc3545")
     elif rpv["STRESS"] > 0.15: h = ("ACCUMULATE", "#ffc107")
@@ -264,23 +317,21 @@ def cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg, term_spread)
         return "Low CIS due to term structure erosion"
     return "Carry structure stable"
 
-# --- CARRY BAND LOGIC (FIXED) ---
+# --- CARRY BAND LOGIC ---
 def carry_permission_band(cis):
     if cis > 0.35:
         return "FULL CARRY", "#28a745"
     if cis > 0.15:
         return "CONTROLLED CARRY", "#ffc107"
     if cis > -0.05:
-        return "TOLERANCE ONLY", "#fd7e14"  # ORANGE
-    return "NO CARRY", "#dc3545"          # RED
+        return "TOLERANCE ONLY", "#fd7e14"
+    return "NO CARRY", "#dc3545"
 
 # --- CIS ENGINE ---
 def compute_cis_score(rpv, drift, stress_accel, std_pct, m1, m2):
     return np.clip(0.40*(rpv['COMPRESSION']+rpv['TRANSITION']) + 0.20*np.clip(-std_pct/0.25, -1, 1) + 0.15*np.clip((m2-m1)/1.0, -1, 1) - 0.50*rpv['STRESS'] - 0.30*np.clip(drift['STRESS']/0.10, 0, 1) - 0.20*(1.0 if stress_accel else 0.0), -1, 1)
 
-# REMOVED OLD get_cis_status TO AVOID CONFUSION
-
-# --- CPS ENGINE (UPDATED: DUAL LAYER) ---
+# --- CPS ENGINE ---
 def compute_cps_score(rpv, std_pct, skew_accel_bool, m1, m2, m3):
     struct = 0.40 * (rpv['EXPANSION'] + rpv['STRESS'])
     gamma_hat = 0.25 * np.clip(std_pct / 0.30, -1, 1)
@@ -382,23 +433,21 @@ def run_engine_live(df):
 
     cis_delta = cis - prev_cis_val
     
-    # --- UPDATED DTE CALCULATION ---
+    # --- DTE CALCULATION ---
     m1_dte, m2_dte = 0, 0
     try:
         current_data_date = curr['timestamp']
-        # M1 DTE
         if pd.notnull(curr.get('m1_month')):
             expiry_date_m1 = pd.to_datetime(curr['m1_month'], format='%d-%b-%Y')
             m1_dte = (expiry_date_m1 - current_data_date).days
             if m1_dte < 0: m1_dte = 0
         
-        # M2 DTE
         if pd.notnull(curr.get('m2_month')):
             expiry_date_m2 = pd.to_datetime(curr['m2_month'], format='%d-%b-%Y')
             m2_dte = (expiry_date_m2 - current_data_date).days
             if m2_dte < 0: m2_dte = 0
     except:
-        m1_dte = 30 # Fallback default
+        m1_dte = 30 
 
     signals = {
         't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
@@ -407,14 +456,9 @@ def run_engine_live(df):
         't5': (curr['skew_index'] - prev['skew_index'] > 0.3, "RISING" if curr['skew_index'] - prev['skew_index'] > 0.3 else "FLAT", f"{curr['skew_index'] - prev['skew_index']:+.2f}"), 
     }
     
-    # Calculate vars for Context Logic
     iv_chg_val = curr['m1_iv'] - prev['m1_iv']
     term_spread_val = curr.get('m2_iv', curr['m1_iv']) - curr['m1_iv']
-
-    # New Context Logic Call
     context_label = cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg_val, term_spread_val)
-    
-    # *** FIX: Use correct function and capture color ***
     band_label, band_color = carry_permission_band(cis)
 
     ctx = {
@@ -442,16 +486,6 @@ def get_full_rpv_history(df):
         rows.append(rpv)
     return pd.DataFrame(rows)
 
-# --- HELPER: CALCULATE HISTORICAL REGIME ---
-def calculate_historical_regime(df):
-    history = []
-    if len(df) < 5: return pd.DataFrame()
-    for i in range(2, len(df)):
-        rpv, _ = compute_rpv(df.iloc[i], df.iloc[i-1], df.iloc[i-2])
-        dom = max(rpv, key=rpv.get)
-        history.append({'timestamp': df.iloc[i]['timestamp'], 'regime': dom, 'val': 1})
-    return pd.DataFrame(history)
-
 # --- DASHBOARD RENDERER ---
 def render_dashboard(df_selected, signals, ctx, curr, df_all):
     cis = ctx['cis']
@@ -463,7 +497,6 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     
     arrow = "<span class='delta-arrow' style='color: #28a745;'>↑</span>" if cis['delta'] > 0.001 else "<span class='delta-arrow' style='color: #dc3545;'>↓</span>" if cis['delta'] < -0.001 else ""
     
-    # 1. Executive Command (UPDATED: REMOVED DECAY METER)
     st.markdown(f"""<div class="exec-box" style="border-color: {cis['color']};">
     <div style="flex: 1;">
         <div style="font-size: 11px; color: #888; font-weight:bold;">CARRY PERMISSION</div>
@@ -478,7 +511,6 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     </div>
 </div>""", unsafe_allow_html=True)
 
-    # 2. Market Structure
     p_comp = int(ctx['rpv']['COMPRESSION'] * 100)
     p_tran = int(ctx['rpv']['TRANSITION'] * 100)
     p_expa = int(ctx['rpv']['EXPANSION'] * 100)
@@ -501,11 +533,9 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     </div>
 </div>""", unsafe_allow_html=True)
 
-    # 4. Divergence Warning
     if div['msg']:
         st.markdown(f"""<div class="div-warning" style="background-color: {div['color']}20; border-color: {div['color']}; color: {div['color']};">{div['msg']}</div>""", unsafe_allow_html=True)
 
-    # 6. Signals
     c1, c2, c3, c4 = st.columns(4)
     with c1: s=signals['t1']; render_tile("FRONT STRESS (M1)", s[0], s[1], s[2])
     with c2: s=signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2])
@@ -519,21 +549,17 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         <span>M2 DTE: {ctx['m2_dte']}</span>
     </div>""", unsafe_allow_html=True)
 
-    # --- REGIME DYNAMICS (NEW SECTION) ---
     st.markdown('<div class="section-header">🔍 Regime Dynamics & Stability</div>', unsafe_allow_html=True)
     
-    # Pre-Stress Status
     ps_status = "<span class='ps-status-danger'>⚠️ TRIGGERED</span>" if pre_stress else "<span class='ps-status-safe'>✅ SAFE</span>"
     ps_msg = "WARNING: TAIL RISK > 60% OF EXPANSION" if pre_stress else "System Stable. No immediate crash precursors."
     
-    # Drift formatting helper
     def fmt_drift(val):
         sym = "↑" if val > 0 else "↓" if val < 0 else "−"
         c = "#28a745" if val > 0.05 else "#dc3545" if val < -0.05 else "#888"
-        if val > 0.1: c = "#00e676" # strong positive
+        if val > 0.1: c = "#00e676"
         return f"<span style='color:{c}; font-weight:bold;'>{sym} {abs(val):.2f}</span>"
 
-    # FLUSH LEFT HTML BLOCK TO FIX INDENTATION BUG
     st.markdown(textwrap.dedent(f"""
     <div class="dynamics-console">
         <div class="ps-panel">
@@ -554,23 +580,19 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
     </div>
     """), unsafe_allow_html=True)
 
-    # --- ANALYTICS ---
     st.markdown('<div class="section-header">📊 Analytics</div>', unsafe_allow_html=True)
     df_chart = df_selected.sort_values('timestamp').tail(60)
 
-    # 1. Spot vs Straddle
     fig_spot = make_subplots(specs=[[{"secondary_y": True}]])
     fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['spot_price'], line=dict(color='#3498db', width=2), name="Spot"), secondary_y=False)
     fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['m1_straddle'], line=dict(color='#e74c3c', width=2, dash='dot'), name="Straddle"), secondary_y=True)
     fig_spot.update_layout(title="<b>Nifty Spot vs ATM Straddle Price Trend</b>", template="plotly_dark", height=350, margin=dict(t=20, b=20, l=20, r=20), legend=dict(orientation="h", y=1.1))
     st.plotly_chart(fig_spot, width="stretch")
 
-    # 2. CIS vs CPS TREND
     if not ctx['history'].empty:
         fig_trend = plot_cis_cps_trend(ctx['history'])
         st.plotly_chart(fig_trend, width="stretch")
 
-    # 3. Regime Probabilities
     rpv_full_hist = get_full_rpv_history(df_selected.tail(60))
     if not rpv_full_hist.empty:
         fig_rpv = go.Figure()
@@ -581,9 +603,7 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         fig_rpv.update_layout(title="<b>Regime Probabilities Over Time (2 Months)</b>", template="plotly_dark", height=300, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[0, 1]), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig_rpv, width="stretch")
 
-    # 4. Metric Charts
     df_hist = df_chart.copy()
-    # MODIFICATION: M2 - M1
     df_hist['slope'] = df_hist['m2_iv'] - df_hist['m1_iv']
     df_hist['slope_col'] = np.where(df_hist['slope'] >= 0, '#00cc00', '#ff0000')
     df_hist['std_pct'] = df_hist['m1_straddle'].pct_change() * 100
@@ -613,7 +633,6 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         fig_skew.update_layout(title="<b>Skew Index</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_skew, width="stretch")
 
-    # 5. Missing Charts Re-added
     c5, c6 = st.columns(2)
     with c5:
         fig_vvix = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['india_vix'], mode='lines', line=dict(color='#f1c40f', width=2)))
@@ -630,15 +649,236 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         fig_sd.update_layout(title="<b>Price Displacement (SD)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_sd, width="stretch")
 
+# --- GREEK MANAGER LOGIC ---
+
+def hard_kill_conditions(ctx, df_greeks):
+    # Rule: If in Expansion/Stress, forbid late-cycle short gamma (DTE <= 21)
+    if ctx['regime'] in ["EXPANSION", "STRESS"] and not df_greeks.empty:
+        short_legs = df_greeks[df_greeks['Leg'] == 'SHORT']
+        if not short_legs.empty and 'DTE' in short_legs.columns:
+            if short_legs['DTE'].min() <= 21:
+                return True, "Late-cycle short gamma in hostile regime (DTE < 21)"
+    return False, None
+
+def compute_net_greeks(df, capital):
+    scale = capital / NORMALIZATION_UNIT
+    if df.empty: return {k: 0.0 for k in ["delta", "gamma", "vega", "theta"]}
+    
+    net = {
+        "delta": df["Delta"].sum() / scale,
+        "gamma": df["Gamma"].sum() / scale,
+        "vega": df["Vega"].sum() / scale,
+        "theta": df["Theta"].sum() / scale
+    }
+    return net
+
+def run_greek_stress_engine(greeks, capital, regime):
+    scale = capital / NORMALIZATION_UNIT
+    
+    # Dynamic Vega Shock based on Regime
+    vol_mult = VOL_SHOCK.get(regime, 3)
+    
+    # 2-Sided Delta Stress
+    delta_pnl_up = greeks["delta"] * 0.015 + greeks["gamma"] * (0.015 ** 2)
+    delta_pnl_dn = -greeks["delta"] * 0.015 + greeks["gamma"] * (0.015 ** 2)
+    trend_pnl = min(delta_pnl_up, delta_pnl_dn)
+    
+    dominant_trend = "TREND_UP" if delta_pnl_up < delta_pnl_dn else "TREND_DN"
+
+    pnl = {
+        "CHOP": greeks["gamma"] * (0.005 ** 2) * 2,
+        dominant_trend: trend_pnl,
+        "VOL": greeks["vega"] * vol_mult,
+        "TIME": -greeks["theta"], # Theta decay check
+    }
+    
+    worst_val = min(pnl.values())
+    dominant = min(pnl, key=pnl.get)
+    
+    # Worst case % impact on Total Capital
+    # Greeks are per 1L. PnL is in normalized units. 
+    # To get actual PnL: worst_val * scale
+    # % Impact = (worst_val * scale) / capital = worst_val / NORMALIZATION_UNIT
+    
+    return {
+        "worst_pct": worst_val / NORMALIZATION_UNIT,
+        "dominant": dominant,
+        "pnl": pnl
+    }
+
+def apply_greek_traffic_logic(ctx, greeks, stress):
+    regime = ctx["regime"]
+    limits = GREEK_LIMITS[regime]
+    decisions = {}
+    
+    for g in ["delta", "gamma", "vega", "theta"]:
+        limit = limits.get(g)
+        val = greeks[g]
+        status = "GREEN"
+        reason = "Within limits"
+        
+        # Logic: Check Limits
+        if g == "delta" and limit is not None:
+            if abs(val) < limit:
+                status = "RED"
+                reason = f"Directional bias too low (Min |{limit}|)"
+        elif limit is not None:
+            # For Gamma/Vega (Caps): val < limit (more negative is bad)
+            # For Theta (Floor): val < limit (less income is bad)
+            if (limit < 0 and val < limit) or (limit > 0 and val < limit):
+                status = "RED"
+                reason = f"Violates regime limit ({limit})"
+        
+        # Logic: Check Dominant Stress
+        if status != "RED":
+            if DOMINANT_MAP.get(stress["dominant"]) == g:
+                status = "AMBER"
+                reason = "Dominant stress contributor"
+                
+        decisions[g] = {"status": status, "reason": reason, "limit": limit}
+        
+    return decisions
+
+# --- GREEK UI COMPONENTS ---
+
+def render_utilization_bar(val, limit, color):
+    if limit is None or limit == 0: return ""
+    pct = min(abs(val / limit) * 100, 100)
+    return f"""<div style="width:100%; background:#222; height:6px; border-radius:3px; margin-top:5px;">
+               <div style="width:{pct}%; background:{color}; height:100%; border-radius:3px;"></div></div>"""
+
+def render_greek_cards(greeks, decisions):
+    cols = st.columns(4)
+    colors = {"GREEN": "#28a745", "AMBER": "#ffc107", "RED": "#dc3545"}
+    
+    for i, g in enumerate(["delta", "gamma", "vega", "theta"]):
+        d = decisions[g]
+        c = colors[d["status"]]
+        val = greeks[g]
+        limit = d['limit']
+        
+        bar_html = render_utilization_bar(val, limit, c)
+        
+        with cols[i]:
+            st.markdown(f"""
+            <div style="background:#0d1117; border-left:4px solid {c}; padding:10px; border-radius:4px;">
+                <div style="font-size:12px; color:#888; font-weight:bold; text-transform:uppercase;">{g}</div>
+                <div style="font-size:24px; font-weight:bold; color:#fff;">{val:.0f}</div>
+                <div style="font-size:11px; color:#aaa;">Limit: {limit if limit else 'None'}</div>
+                {bar_html}
+            </div>
+            """, unsafe_allow_html=True)
+
+def render_greek_manager(ctx):
+    # 1. TOP STRIP (CONTEXT)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Regime", ctx["regime"])
+    c2.metric("Carry", ctx["cis"]["label"])
+    c3.metric("Convexity", ctx["cps"]["label"])
+    c4.metric("Pre-Stress", "YES" if ctx["pre_stress"] else "NO")
+    st.divider()
+
+    # 2. INPUTS (Processing First)
+    if "greek_table" not in st.session_state:
+        st.session_state["greek_table"] = pd.DataFrame([
+            {"Structure": "RDE", "Leg": "SHORT", "Expiry": None, "Delta": 0.0, "Gamma": 0.0, "Vega": 0.0, "Theta": 0.0},
+            {"Structure": "RDE", "Leg": "LONG", "Expiry": None, "Delta": 0.0, "Gamma": 0.0, "Vega": 0.0, "Theta": 0.0},
+        ])
+
+    # 3. CALCULATIONS
+    # We need capital to compute everything
+    with st.expander("⚙️ Inputs & Structures", expanded=False):
+        c_cap, c_marg = st.columns(2)
+        # MODIFIED DEFAULTS: 1L Capital, 30k Margin, 10k Step
+        capital = c_cap.number_input("Capital Deployed (₹)", value=100_000, step=10_000)
+        margin = c_marg.number_input("Margin Used (₹)", value=30_000, step=10_000)
+        
+        df_greeks = st.data_editor(
+            st.session_state["greek_table"],
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Structure": st.column_config.TextColumn("Structure"),
+                "Leg": st.column_config.SelectboxColumn("Leg", options=["SHORT", "LONG"]),
+                "Expiry": st.column_config.DateColumn("Expiry"),
+            }
+        )
+        st.session_state["greek_table"] = df_greeks
+        
+        # Calculate DTE internally for logic
+        if not df_greeks.empty and "Expiry" in df_greeks.columns:
+            try:
+                df_greeks["DTE"] = (pd.to_datetime(df_greeks["Expiry"]) - pd.Timestamp.now()).dt.days
+            except: pass
+
+    # 4. HARD KILL SWITCH
+    kill, reason = hard_kill_conditions(ctx, df_greeks)
+    if kill:
+        st.error(f"🚨 HARD EXIT REQUIRED — {reason}")
+        st.stop()
+
+    # 5. MAIN LOGIC
+    greek_state = compute_net_greeks(df_greeks, capital)
+    stress = run_greek_stress_engine(greek_state, capital, ctx['regime'])
+    decisions = apply_greek_traffic_logic(ctx, greek_state, stress)
+    
+    # 6. ALERT ZONE
+    st.markdown("### ⚠️ Stress Test")
+    ac1, ac2, ac3 = st.columns([2, 2, 3])
+    ac1.metric("Worst-Case Impact", f"{stress['worst_pct']*100:.2f}%", delta_color="inverse")
+    ac2.metric("Dominant Risk", stress["dominant"])
+    
+    # SOD Comparison
+    if "sod_greeks" in st.session_state:
+        sod = compute_net_greeks(st.session_state["sod_greeks"], capital)
+        delta_change = greek_state['delta'] - sod['delta']
+        ac3.metric("Δ Delta vs Open", f"{delta_change:.0f}")
+    else:
+        if ac3.button("📌 Freeze SOD"):
+            st.session_state["sod_greeks"] = df_greeks.copy()
+            st.rerun()
+
+    st.divider()
+
+    # 7. GREEK SCORECARDS
+    render_greek_cards(greek_state, decisions)
+    
+    # 8. DECISION PANEL
+    st.write("")
+    st.markdown("### 📝 Action Plan")
+    for g, d in decisions.items():
+        if d['status'] == "GREEN": continue
+        
+        icon = "🔴" if d['status'] == "RED" else "🟡"
+        action = "Monitor closely"
+        if d['status'] == "RED":
+            if g == "gamma": action = "Reduce front-month shorts immediately."
+            elif g == "vega": action = "Cut exposure or add calendar hedges."
+            elif g == "delta": action = "Rebalance directional bias."
+            
+        st.markdown(f"""
+        <div style="margin-bottom:8px; padding:8px; background:#161b22; border-left:3px solid {'#dc3545' if d['status']=='RED' else '#ffc107'};">
+            <strong>{icon} {g.upper()}</strong>: {d['reason']} <br>
+            <span style="color:#888; font-size:13px;">👉 Action: {action}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # 9. AUDIT LOGGING
+    st.session_state.setdefault("greek_audit", []).append({
+        "timestamp": datetime.now(),
+        "greeks": greek_state,
+        "stress": stress,
+        "decisions": decisions,
+        "regime": ctx["regime"]
+    })
+
 def main():
     df_all = load_data(300) 
     if len(df_all) < 5: st.error("⚠️ Not enough data found."); st.stop()
 
-    # --- LAYOUT ADJUSTMENT FOR CENTERED SUBTEXT ---
-    c1, c2, c3 = st.columns([1, 6, 1]) # Make middle column wider for centering
+    c1, c2, c3 = st.columns([1, 6, 1], vertical_alignment="center") 
     
     with c1: 
-        # Left side: Date & Picker
         st.markdown(f"**{df_all.iloc[0]['timestamp'].strftime('%d %b %Y')}**")
         sel_date = st.date_input("Date", value=df_all['timestamp'].max().date())
     
@@ -647,35 +887,36 @@ def main():
     signals, ctx, curr = run_engine_live(df_sel)
 
     with c2: 
-        # Center: Title & Subtext
-        st.markdown("""
+        st.html("""
             <div style='text-align: center;'>
-                <h1 style='margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'>
+                <h1 style='margin: 0; padding: 0; color: #ffc107; font-size: 42px; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; line-height: 1.0; text-shadow: 0px 0px 15px rgba(255, 193, 7, 0.4);'>
                     VOL⚡TATE System
                 </h1>
-                <h3 style='margin: 5px 0 0 0; padding: 0; color: #aaa; font-size: 16px; font-weight: 400; letter-spacing: 1px;'>
+                <h3 style='margin: 0; padding: 0; color: #aaa; font-size: 16px; font-weight: 400; letter-spacing: 1px; line-height: 1.2;'>
                     Volatility Regime & Carry Integrity System
                 </h3>
             </div>
-        """, unsafe_allow_html=True)
+        """)
         
     with c3: 
-        # Right side: Badges
         st.markdown('<div style="text-align: right; margin-top: 10px;">', unsafe_allow_html=True)
         if ctx['is_roll']: st.markdown('<span class="pill pill-yellow">ROLLOVER</span>', unsafe_allow_html=True)
         elif ctx['is_late']: st.markdown('<span class="pill pill-orange">LATE CYCLE</span>', unsafe_allow_html=True)
         else: st.markdown('<span class="pill pill-gray">MID CYCLE</span>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True) # Spacer
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_dash, tab_docs = st.tabs(["📊 DASHBOARD", "📘 DOCUMENTATION"])
+    tab_dash, tab_greeks, tab_docs = st.tabs(["📊 DASHBOARD", "🧠 GREEK MANAGER", "📘 DOCUMENTATION"])
 
     with tab_dash:
         render_dashboard(df_sel, signals, ctx, curr, df_all)
         st.markdown("<br><hr>", unsafe_allow_html=True)
         with st.expander("📂 Raw Database"):
             st.dataframe(df_all.style.format("{:.2f}", subset=['spot_price', 'm1_straddle', 'm1_iv', 'm2_iv', 'm3_iv', 'skew_index', 'india_vix']))
+
+    with tab_greeks:
+        render_greek_manager(ctx)
 
     with tab_docs:
         render_documentation_tab()
