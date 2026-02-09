@@ -7,9 +7,12 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import textwrap
+import importlib
 
 # --- IMPORT DOCUMENTATION MODULE ---
 try:
+    import VOLSTATE_docs                  # Import the module
+    importlib.reload(VOLSTATE_docs)       # <--- FORCE RELOAD THE MODULE
     from VOLSTATE_docs import render_documentation_tab
 except ImportError:
     def render_documentation_tab():
