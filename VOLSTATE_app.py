@@ -71,7 +71,7 @@ st.markdown("""
     .pill-orange { background-color: #fd7e14; }
     .pill-gray { background-color: #444; opacity: 0.5; }
     
-    /* Exec Box */
+    /* Exec Box (Responsive) */
     .exec-box { 
         background-color: #1e252e; 
         border: 2px solid #444; 
@@ -79,6 +79,8 @@ st.markdown("""
         padding: 20px; 
         margin-bottom: 20px; 
         display: flex; 
+        flex-wrap: wrap; 
+        gap: 15px;      
         justify-content: space-around; 
         align-items: center; 
     }
@@ -87,12 +89,13 @@ st.markdown("""
     .delta-arrow { font-size: 24px; font-weight: bold; }
     .cis-context { font-size: 12px; color: #888; margin-top: 5px; font-style: italic; }
 
-    /* Permission Meter */
+    /* Permission Meter (Responsive) */
     .perm-meter {
         padding: 10px 15px; 
         border-radius: 8px; 
         background:#161b22; 
-        min-width: 160px;
+        flex: 1;          
+        min-width: 140px; 
         text-align: center;
     }
 
@@ -111,17 +114,41 @@ st.markdown("""
     .regime-box { text-align: center; padding: 15px; border-radius: 12px; margin-bottom: 25px; border: 1px solid rgba(255, 255, 255, 0.1); background-color: rgba(255, 255, 255, 0.05); }
     .regime-label { font-size: 24px; font-weight: 900; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
     
-    /* Tiles */
-    .grid-tile { background-color: #161b22; border: 1px solid #333; border-radius: 6px; padding: 15px; height: 110px; display: flex; flex-direction: column; justify-content: space-between; }
-    .tile-header { font-size: 13px; color: #888; text-transform: uppercase; font-weight: 600; }
-    .tile-value { font-size: 24px; font-weight: 800; margin: 2px 0; }
-    .tile-sub { font-size: 12px; font-family: monospace; color: #aaa; }
+    /* Tiles (Responsive & Sparkline Ready) */
+    .grid-tile { 
+        background-color: #161b22; 
+        border: 1px solid #333; 
+        border-radius: 6px; 
+        padding: 12px; 
+        height: 120px; 
+        display: flex; 
+        flex-direction: column; 
+        justify-content: space-between; 
+        position: relative;
+        overflow: hidden;
+    }
+    .tile-header { font-size: 11px; color: #888; text-transform: uppercase; font-weight: 600; z-index: 2;}
+    .tile-value { font-size: 22px; font-weight: 800; margin: 2px 0; z-index: 2;}
+    .tile-sub { font-size: 11px; font-family: monospace; color: #aaa; z-index: 2;}
+    
+    /* Sparkline Container (EXPANDED) */
+    .sparkline-container {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
+        height: 40%; /* Covers bottom 40% of tile */
+        opacity: 0.35;
+        z-index: 1;
+        pointer-events: none;
+    }
     
     /* Utility */
     .text-green { color: #28a745; } .text-amber { color: #ffc107; } .text-red { color: #dc3545; } .text-gray { color: #888; }
     .border-green { border-left: 4px solid #28a745; } .border-amber { border-left: 4px solid #ffc107; } .border-red { border-left: 4px solid #dc3545; } .border-gray { border-left: 4px solid #555; }
     
-    .mini-diag { font-family: monospace; font-size: 12px; color: #666; border-top: 1px solid #333; margin-top: 20px; padding-top: 10px; display: flex; justify-content: space-around; }
+    .mini-diag { font-family: monospace; font-size: 12px; color: #666; border-top: 1px solid #333; margin-top: 20px; padding-top: 10px; display: flex; justify-content: space-around; flex-wrap: wrap; }
     .section-header { margin-top: 40px; margin-bottom: 15px; padding-bottom: 5px; border-bottom: 1px solid #333; font-size: 20px; font-weight: bold; color: #ddd;}
     .rpv-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 10px; width: 100%; }
     .stDateInput label { display: none; }
@@ -134,7 +161,7 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 20px;
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: wrap; /* RESPONSIVE FIX */
         gap: 25px;
         align-items: center;
         box-shadow: 0 4px 12px rgba(0,0,0,0.25);
@@ -143,13 +170,34 @@ st.markdown("""
         font-size: 12px; color: #aaa; font-weight: bold; letter-spacing: 1.5px; margin-bottom: 8px; text-transform: uppercase;
     }
     
-    .ps-panel { flex: 1; min-width: 200px; border-right: 1px solid #444; padding-right: 20px; }
+    .ps-panel { 
+        flex: 1; 
+        min-width: 240px; /* RESPONSIVE FIX */
+        border-right: 1px solid #444; 
+        padding-right: 20px; 
+    }
     .ps-status-safe { color: #00e676; font-size: 22px; font-weight: 900; text-shadow: 0 0 10px rgba(0, 230, 118, 0.2); }
     .ps-status-danger { color: #ff1744; font-size: 22px; font-weight: 900; animation: pulse 1.5s infinite; text-shadow: 0 0 10px rgba(255, 23, 68, 0.3); }
     .ps-metrics { font-family: monospace; font-size: 13px; color: #bbb; margin-top: 8px; }
     
-    .drift-grid { flex: 3; display: flex; justify-content: space-between; gap: 15px; }
-    .drift-item { background: #0d1117; border: 1px solid #444; border-radius: 8px; padding: 12px; flex: 1; text-align: center; transition: transform 0.2s, border-color 0.2s; box-shadow: inset 0 0 15px rgba(0,0,0,0.3); }
+    .drift-grid { 
+        flex: 3; 
+        display: flex; 
+        flex-wrap: wrap; /* RESPONSIVE FIX */
+        justify-content: space-between; 
+        gap: 15px; 
+    }
+    .drift-item { 
+        background: #0d1117; 
+        border: 1px solid #444; 
+        border-radius: 8px; 
+        padding: 12px; 
+        flex: 1; 
+        min-width: 100px; /* RESPONSIVE FIX */
+        text-align: center; 
+        transition: transform 0.2s, border-color 0.2s; 
+        box-shadow: inset 0 0 15px rgba(0,0,0,0.3); 
+    }
     .drift-item:hover { border-color: #777; transform: translateY(-2px); }
     .drift-label { font-size: 11px; color: #999; font-weight: bold; letter-spacing: 0.5px; }
     .drift-val { font-size: 18px; font-weight: bold; margin-top: 4px; }
@@ -177,12 +225,70 @@ def load_data(limit=300):
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0.0)
     return df
 
-# --- UI HELPER ---
-def render_tile(label, state_bool, display_text, subtext, is_stress=False):
-    if state_bool is None: c, b = "text-gray", "border-gray"
-    elif state_bool: c, b = ("text-red", "border-red") if is_stress else ("text-amber", "border-amber")
-    else: c, b = "text-green", "border-green"
-    st.markdown(f"""<div class="grid-tile {b}"><div class="tile-header">{label}</div><div class="tile-value {c}">{display_text}</div><div class="tile-sub">{subtext}</div></div>""", unsafe_allow_html=True)
+# --- UI HELPER: SPARKLINE GENERATOR (UPDATED: 5 DAYS + DOTS + WIDE) ---
+def generate_sparkline_svg(data_series, color):
+    """Generates a minimal SVG line chart with dots for each day."""
+    if len(data_series) < 2: return ""
+    
+    # Normalize data to 0-100 coordinates
+    min_val = min(data_series)
+    max_val = max(data_series)
+    rng = max_val - min_val if max_val != min_val else 1
+    
+    points = []
+    coords = [] # Store coordinates for dots
+    
+    # Larger coordinate system for smoother wide rendering
+    width = 200 
+    height = 50
+    step = width / (len(data_series) - 1)
+    
+    for i, val in enumerate(data_series):
+        x = i * step
+        # SVG y-coordinates go down, so flip (height - y)
+        y = height - ((val - min_val) / rng * height)
+        
+        # Add 5px padding to Y to avoid cutting off circles at top/bottom edges
+        y = max(5, min(height - 5, y))
+        
+        points.append(f"{x:.1f},{y:.1f}")
+        coords.append((x, y))
+    
+    polyline = " ".join(points)
+    
+    # Generate dots for ALL points
+    dots_svg = ""
+    for cx, cy in coords:
+        dots_svg += f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" fill="{color}" />'
+    
+    svg = f"""
+    <svg width="100%" height="100%" viewBox="0 0 {width} {height}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        <polyline points="{polyline}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        {dots_svg}
+    </svg>
+    """
+    return svg
+
+def render_tile(label, state_bool, display_text, subtext, trend_data=None, is_stress=False):
+    if state_bool is None: c, b, hex_c = "text-gray", "border-gray", "#888"
+    elif state_bool: 
+        c, b, hex_c = ("text-red", "border-red", "#dc3545") if is_stress else ("text-amber", "border-amber", "#ffc107")
+    else: 
+        c, b, hex_c = "text-green", "border-green", "#28a745"
+    
+    sparkline_html = ""
+    if trend_data and len(trend_data) >= 2:
+        # Pass the sliced data (handled by caller) to generator
+        sparkline_html = f'<div class="sparkline-container">{generate_sparkline_svg(trend_data, hex_c)}</div>'
+        
+    st.markdown(f"""
+    <div class="grid-tile {b}">
+        <div class="tile-header">{label}</div>
+        <div class="tile-value {c}">{display_text}</div>
+        <div class="tile-sub">{subtext}</div>
+        {sparkline_html}
+    </div>
+    """, unsafe_allow_html=True)
 
 # --- ENGINE LOGIC ---
 def iv_likelihood(iv_chg): return {"COMPRESSION": max(0, 1 - iv_chg/0.5), "TRANSITION": np.clip(iv_chg/0.6, 0, 1), "EXPANSION": np.clip(iv_chg/1.0, 0, 1), "STRESS": np.clip((iv_chg - 0.8)/1.2, 0, 1)}
@@ -422,11 +528,25 @@ def run_engine_live(df):
     m2_m1_spread = curr.get('m2_iv', 0) - curr['m1_iv']
     t4_status = "INVERTED" if m2_m1_spread < CARRY_INSULATION_THRESHOLD else "NORMAL"
     
+    # 4. Prepare Signals with Trend History for Sparklines (UPDATED: 5 DAY SLICE)
+    # T1: IV History (last 5)
+    t1_hist = df_c['m1_iv'].tail(5).tolist()
+    
+    # T2: Straddle History (last 5)
+    t2_hist = df_c['m1_straddle'].tail(5).tolist() 
+    
+    # T4: Spread History (last 5)
+    t4_series = df_c['m2_iv'] - df_c['m1_iv']
+    t4_hist = t4_series.tail(5).tolist()
+    
+    # T5: Skew History (last 5)
+    t5_hist = df_c['skew_index'].tail(5).tolist()
+
     signals = {
-        't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
-        't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%"), 
-        't4': (t4_status == "INVERTED", t4_status, f"{m2_m1_spread:.2f}"), 
-        't5': (curr['skew_index'] - prev['skew_index'] > 0.3, "RISING" if curr['skew_index'] - prev['skew_index'] > 0.3 else "FLAT", f"{curr['skew_index'] - prev['skew_index']:+.2f}"), 
+        't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%", t1_hist), 
+        't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%", t2_hist), 
+        't4': (t4_status == "INVERTED", t4_status, f"{m2_m1_spread:.2f}", t4_hist), 
+        't5': (curr['skew_index'] - prev['skew_index'] > 0.3, "RISING" if curr['skew_index'] - prev['skew_index'] > 0.3 else "FLAT", f"{curr['skew_index'] - prev['skew_index']:+.2f}", t5_hist), 
     }
     
     iv_chg_val = curr['m1_iv'] - prev['m1_iv']
@@ -509,10 +629,10 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         st.markdown(f"""<div class="div-warning" style="background-color: {div['color']}20; border-color: {div['color']}; color: {div['color']};">{div['msg']}</div>""", unsafe_allow_html=True)
 
     c1, c2, c3, c4 = st.columns(4)
-    with c1: s=signals['t1']; render_tile("FRONT STRESS (M1)", s[0], s[1], s[2])
-    with c2: s=signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2])
-    with c3: s=signals['t4']; render_tile("CARRY INSULATION", s[0], s[1], s[2], True)
-    with c4: s=signals['t5']; render_tile("HEDGING PRESSURE", s[0], s[1], s[2])
+    with c1: s=signals['t1']; render_tile("FRONT STRESS (M1)", s[0], s[1], s[2], s[3], True)
+    with c2: s=signals['t2']; render_tile("THETA EFFICIENCY", s[0], s[1], s[2], s[3])
+    with c3: s=signals['t4']; render_tile("CARRY INSULATION", s[0], s[1], s[2], s[3], True)
+    with c4: s=signals['t5']; render_tile("HEDGING PRESSURE", s[0], s[1], s[2], s[3], True)
     st.markdown(f"""<div class="mini-diag">
         <span>SPOT: {curr['spot_price']:.0f}</span>
         <span>ATM IV: {curr['m1_iv']:.2f}%</span>
