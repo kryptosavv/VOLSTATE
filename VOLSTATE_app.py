@@ -17,51 +17,29 @@ except ImportError:
 
 # --- CONFIG & CONSTANTS ---
 DB_NAME = "market_data.db"
-NORMALIZATION_UNIT = 100_000  # ₹1L Constant
 
-# --- GREEK LIMITS (THE CONSTITUTION) ---
-GREEK_LIMITS = {
-    "COMPRESSION": {
-        "delta": 150,    # |Delta| >= 150 
-        "gamma": -200,   # Max short gamma
-        "vega": -300,    # Max short vega
-        "theta": 200     # Min theta income
-    },
-    "TRANSITION": {
-        "delta": 100,
-        "gamma": -100, 
-        "vega": -100, 
-        "theta": 0       
-    },
-    "EXPANSION": {
-        "delta": 200,   
-        "gamma": 150,   
-        "vega": 300,    
-        "theta": -100   
-    },
-    "STRESS": {
-        "delta": 100,   
-        "gamma": 250,   
-        "vega": 500,    
-        "theta": None    
-    }
-}
+# --- 1. REVISED CONSTANTS (FROM DOC) ---
 
-# --- STRESS ENGINE SETTINGS ---
-DOMINANT_MAP = {
-    "CHOP": "gamma",
-    "TREND_UP": "delta",
-    "TREND_DN": "delta",
-    "VOL": "vega",
-    "TIME": "theta"
-}
+# A. Stress Drift
+STRESS_DRIFT_LOOKBACK = 3
+STRESS_DRIFT_THRESHOLD = 0.12
+STRESS_DRIFT_NORM = 0.20
+STRESS_DRIFT_PERSISTENCE = 2
 
-VOL_SHOCK = {
-    "COMPRESSION": 2,
-    "TRANSITION": 3,
-    "EXPANSION": 4,
-    "STRESS": 6
-}
+# B. CIS Weights
+CIS_STRESS_WEIGHT = -0.30
+CIS_STRESS_DRIFT_WEIGHT = -0.20
+CIS_STRESS_ACCEL_WEIGHT = -0.10
+
+# C. Stress Gate
+APPLY_STRESS_PENALTY_ONLY_IF_STRESS_GT = 0.18
+
+# D. Carry Insulation
+CARRY_INSULATION_THRESHOLD = -0.25
+
+# E. CIS Floors
+CIS_FLOOR_COMPRESSION = 0.25
+CIS_FLOOR_TRANSITION = 0.15
 
 st.set_page_config(
     page_title="VOLSTATE System", 
@@ -136,16 +114,6 @@ st.markdown("""
     .tile-value { font-size: 24px; font-weight: 800; margin: 2px 0; }
     .tile-sub { font-size: 12px; font-family: monospace; color: #aaa; }
     
-    /* Greek Manager Tiles */
-    .greek-tile { 
-        background-color: #0d1117; 
-        border-left: 4px solid #555; 
-        border-radius: 4px; 
-        padding: 15px; 
-        margin-bottom: 10px; 
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-    }
-    
     /* Utility */
     .text-green { color: #28a745; } .text-amber { color: #ffc107; } .text-red { color: #dc3545; } .text-gray { color: #888; }
     .border-green { border-left: 4px solid #28a745; } .border-amber { border-left: 4px solid #ffc107; } .border-red { border-left: 4px solid #dc3545; } .border-gray { border-left: 4px solid #555; }
@@ -155,7 +123,7 @@ st.markdown("""
     .rpv-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 10px; width: 100%; }
     .stDateInput label { display: none; }
     
-    /* DYNAMICS CONSOLE (VIBRANT UPDATE) */
+    /* DYNAMICS CONSOLE */
     .dynamics-console {
         background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
         border: 1px solid #555;
@@ -172,51 +140,14 @@ st.markdown("""
         font-size: 12px; color: #aaa; font-weight: bold; letter-spacing: 1.5px; margin-bottom: 8px; text-transform: uppercase;
     }
     
-    /* Pre-Stress Panel */
-    .ps-panel {
-        flex: 1;
-        min-width: 200px;
-        border-right: 1px solid #444;
-        padding-right: 20px;
-    }
-    /* Glow Effects for Status */
-    .ps-status-safe { 
-        color: #00e676; 
-        font-size: 22px; 
-        font-weight: 900; 
-        text-shadow: 0 0 10px rgba(0, 230, 118, 0.2); 
-    }
-    .ps-status-danger { 
-        color: #ff1744; 
-        font-size: 22px; 
-        font-weight: 900; 
-        animation: pulse 1.5s infinite; 
-        text-shadow: 0 0 10px rgba(255, 23, 68, 0.3);
-    }
-    
+    .ps-panel { flex: 1; min-width: 200px; border-right: 1px solid #444; padding-right: 20px; }
+    .ps-status-safe { color: #00e676; font-size: 22px; font-weight: 900; text-shadow: 0 0 10px rgba(0, 230, 118, 0.2); }
+    .ps-status-danger { color: #ff1744; font-size: 22px; font-weight: 900; animation: pulse 1.5s infinite; text-shadow: 0 0 10px rgba(255, 23, 68, 0.3); }
     .ps-metrics { font-family: monospace; font-size: 13px; color: #bbb; margin-top: 8px; }
     
-    /* Drift Grid */
-    .drift-grid {
-        flex: 3;
-        display: flex;
-        justify-content: space-between;
-        gap: 15px;
-    }
-    .drift-item {
-        background: #0d1117;
-        border: 1px solid #444;
-        border-radius: 8px;
-        padding: 12px;
-        flex: 1;
-        text-align: center;
-        transition: transform 0.2s, border-color 0.2s;
-        box-shadow: inset 0 0 15px rgba(0,0,0,0.3);
-    }
-    .drift-item:hover {
-        border-color: #777;
-        transform: translateY(-2px);
-    }
+    .drift-grid { flex: 3; display: flex; justify-content: space-between; gap: 15px; }
+    .drift-item { background: #0d1117; border: 1px solid #444; border-radius: 8px; padding: 12px; flex: 1; text-align: center; transition: transform 0.2s, border-color 0.2s; box-shadow: inset 0 0 15px rgba(0,0,0,0.3); }
+    .drift-item:hover { border-color: #777; transform: translateY(-2px); }
     .drift-label { font-size: 11px; color: #999; font-weight: bold; letter-spacing: 0.5px; }
     .drift-val { font-size: 18px; font-weight: bold; margin-top: 4px; }
     
@@ -303,33 +234,57 @@ def detect_pre_stress(rpv_df):
     is_triggered = (s[-1] > 0.20 and slope > 0.08 and accel and s[-1] > e[-1] * 0.6)
     return is_triggered, {"stress_slope": slope, "stress_accel": accel, "stress_val": s[-1], "exp_val": e[-1]}
 
-# --- CIS CONTEXT LOGIC ---
-def cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg, term_spread):
-    if rpv['STRESS'] > 0.20:
-        return "Low CIS due to rising stress probability"
-    if pre_stress or drift['STRESS'] > 0.08:
-        return "Low CIS due to accelerating stress drift"
-    if std_pct > -0.10:
-        return "Low CIS due to stalled straddle decay"
-    if iv_chg > 0.25:
-        return "Low CIS due to front-month IV repricing"
-    if term_spread < 0:
-        return "Low CIS due to term structure erosion"
+def cis_context_label(cis, rpv, effective_drift, pre_stress, std_pct, iv_chg, term_spread):
+    if rpv['STRESS'] > 0.20: return "Low CIS due to rising stress probability"
+    if pre_stress or effective_drift['STRESS'] > 0: return "Low CIS due to accelerating stress drift"
+    if std_pct > -0.10: return "Low CIS due to stalled straddle decay"
+    if iv_chg > 0.25: return "Low CIS due to front-month IV repricing"
+    if term_spread < 0: return "Low CIS due to term structure erosion"
     return "Carry structure stable"
 
-# --- CARRY BAND LOGIC ---
 def carry_permission_band(cis):
-    if cis > 0.35:
-        return "FULL CARRY", "#28a745"
-    if cis > 0.15:
-        return "CONTROLLED CARRY", "#ffc107"
-    if cis > -0.05:
-        return "TOLERANCE ONLY", "#fd7e14"
+    if cis > 0.35: return "FULL CARRY", "#28a745"
+    if cis > 0.15: return "CONTROLLED CARRY", "#ffc107"
+    if cis > -0.05: return "TOLERANCE ONLY", "#fd7e14"
     return "NO CARRY", "#dc3545"
 
-# --- CIS ENGINE ---
-def compute_cis_score(rpv, drift, stress_accel, std_pct, m1, m2):
-    return np.clip(0.40*(rpv['COMPRESSION']+rpv['TRANSITION']) + 0.20*np.clip(-std_pct/0.25, -1, 1) + 0.15*np.clip((m2-m1)/1.0, -1, 1) - 0.50*rpv['STRESS'] - 0.30*np.clip(drift['STRESS']/0.10, 0, 1) - 0.20*(1.0 if stress_accel else 0.0), -1, 1)
+# --- REVISED CIS ENGINE ---
+def compute_cis_score(rpv, drift, stress_accel, std_pct, m1, m2, regime):
+    # 1. Base Score
+    base = 0.40 * (rpv['COMPRESSION'] + rpv['TRANSITION'])
+    
+    # Theta Efficiency (Smoothed Saturation)
+    theta_eff = 0.20 * np.clip(-std_pct/0.30, -0.8, 1)
+    
+    # Carry Insulation (Deadband Restored)
+    spread = m2 - m1
+    insulation = 0.0
+    if spread < -0.25:
+        insulation = -0.15
+    elif spread > 0.25:
+        insulation = +0.10
+    
+    # 2. Penalty Terms
+    # Stress Gating Logic
+    if rpv['STRESS'] < APPLY_STRESS_PENALTY_ONLY_IF_STRESS_GT:
+        p_stress = 0.0
+        p_drift = 0.0
+        p_accel = 0.0
+    else:
+        p_stress = CIS_STRESS_WEIGHT * rpv['STRESS']
+        p_drift = CIS_STRESS_DRIFT_WEIGHT * np.clip(drift['STRESS']/STRESS_DRIFT_NORM, 0, 1)
+        p_accel = CIS_STRESS_ACCEL_WEIGHT * (1.0 if stress_accel else 0.0)
+
+    # 3. Summation
+    raw_cis = base + theta_eff + insulation + p_stress + p_drift + p_accel
+    
+    # 4. Floors
+    if regime == "COMPRESSION":
+        raw_cis = max(raw_cis, CIS_FLOOR_COMPRESSION)
+    elif regime == "TRANSITION":
+        raw_cis = max(raw_cis, CIS_FLOOR_TRANSITION)
+        
+    return np.clip(raw_cis, -1, 1)
 
 # --- CPS ENGINE ---
 def compute_cps_score(rpv, std_pct, skew_accel_bool, m1, m2, m3):
@@ -381,11 +336,9 @@ def run_engine_live(df):
     df_c = df.sort_values('timestamp', ascending=True).copy()
     if len(df_c) < 5: return None, None, df_c.iloc[-1]
     
-    # MODIFICATION: Rolling 5-Day RV for VRP
     df_c['log_ret'] = np.log(df_c['spot_price'] / df_c['spot_price'].shift(1))
     df_c['rv_5d'] = df_c['log_ret'].rolling(window=5).std() * np.sqrt(252) * 100
     
-    # 1. HISTORICAL CALCULATION (CIS & CPS)
     history_data = []
     hist_window = df_c.tail(60)
     
@@ -393,14 +346,14 @@ def run_engine_live(df):
         _c, _p, _p2, _p3 = hist_window.iloc[i], hist_window.iloc[i-1], hist_window.iloc[i-2], hist_window.iloc[i-3]
         _rpv, _ = compute_rpv(_c, _p, _p2)
         _std_pct = ((_c['m1_straddle'] - _p['m1_straddle']) / _p['m1_straddle']) * 100
-        _cis = compute_cis_score(_rpv, {'STRESS':0}, False, _std_pct, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']))
+        _dom = max(_rpv, key=_rpv.get)
+        _cis = compute_cis_score(_rpv, {'STRESS':0}, False, _std_pct, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']), _dom)
         _skew_accel = (_c['skew_index'] - _p['skew_index']) > (_p['skew_index'] - _p2['skew_index'])
         _cps = compute_cps_score(_rpv, _std_pct, _skew_accel, _c['m1_iv'], _c.get('m2_iv', _c['m1_iv']), _c['m3_iv'])
         history_data.append({'timestamp': _c['timestamp'], 'cis': _cis, 'cps': _cps, 'rpv': _rpv})
         
     df_hist = pd.DataFrame(history_data)
 
-    # 2. CURRENT CALCULATIONS
     curr, prev, prev2, prev3 = df_c.iloc[-1], df_c.iloc[-2], df_c.iloc[-3], df_c.iloc[-4]
     rpv, lhs = compute_rpv(curr, prev, prev2)
     dom = max(rpv, key=rpv.get)
@@ -413,14 +366,29 @@ def run_engine_live(df):
     std_pct = ((curr['m1_straddle'] - prev['m1_straddle']) / prev['m1_straddle']) * 100
     skew_accel_bool = (curr['skew_index'] - prev['skew_index']) > (prev['skew_index'] - prev2['skew_index'])
     
-    cis = compute_cis_score(rpv, drift, pre_stress, std_pct, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']))
+    # REVISED DRIFT LOGIC (FIXED: ORDER)
+    drift_stress_current = drift['STRESS']
+    drift_stress_prev = 0.0
+    if len(rpv_hist_short) >= 5:
+        drift_stress_prev = rpv_hist_short['STRESS'].iloc[-2] - rpv_hist_short['STRESS'].iloc[-5]
+    
+    final_stress_drift_val = 0.0
+    if drift_stress_current > STRESS_DRIFT_THRESHOLD and drift_stress_prev > STRESS_DRIFT_THRESHOLD:
+        final_stress_drift_val = drift_stress_current
+    else:
+        final_stress_drift_val = 0.0
+        
+    effective_drift = drift.copy()
+    effective_drift['STRESS'] = final_stress_drift_val
+
+    # Now compute CIS using effective_drift
+    cis = compute_cis_score(rpv, effective_drift, pre_stress, std_pct, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']), dom)
     cps = compute_cps_score(rpv, std_pct, skew_accel_bool, curr['m1_iv'], curr.get('m2_iv', curr['m1_iv']), curr['m3_iv'])
     
     if not df_hist.empty and cis != df_hist.iloc[-1]['cis']:
          new_row = pd.DataFrame([{'timestamp': curr['timestamp'], 'cis': cis, 'cps': cps, 'rpv': rpv}])
          df_hist = pd.concat([df_hist, new_row], ignore_index=True)
 
-    # 3. METRICS
     cis_vals = df_hist['cis'].values
     decay_val = permission_decay_meter(cis_vals)
     decay_color, decay_label = get_decay_status(decay_val)
@@ -433,7 +401,6 @@ def run_engine_live(df):
 
     cis_delta = cis - prev_cis_val
     
-    # --- DTE CALCULATION ---
     m1_dte, m2_dte = 0, 0
     try:
         current_data_date = curr['timestamp']
@@ -449,16 +416,20 @@ def run_engine_live(df):
     except:
         m1_dte = 30 
 
+    m2_m1_spread = curr.get('m2_iv', 0) - curr['m1_iv']
+    t4_status = "INVERTED" if m2_m1_spread < CARRY_INSULATION_THRESHOLD else "NORMAL"
+    
     signals = {
         't1': (curr['m1_iv'] - prev['m1_iv'] > 0.2, "RISING" if curr['m1_iv'] - prev['m1_iv'] > 0.2 else "STABLE", f"{curr['m1_iv'] - prev['m1_iv']:+.2f}%"), 
         't2': (std_pct > -0.1, "STALLED" if std_pct > -0.1 else "DECAYING", f"{std_pct:+.2f}%"), 
-        't4': (curr.get('m2_iv',0) - curr['m1_iv'] < 0, "INVERTED" if curr.get('m2_iv',0) - curr['m1_iv'] < 0 else "NORMAL", f"{curr.get('m2_iv',0) - curr['m1_iv']:.2f}"), 
+        't4': (t4_status == "INVERTED", t4_status, f"{m2_m1_spread:.2f}"), 
         't5': (curr['skew_index'] - prev['skew_index'] > 0.3, "RISING" if curr['skew_index'] - prev['skew_index'] > 0.3 else "FLAT", f"{curr['skew_index'] - prev['skew_index']:+.2f}"), 
     }
     
     iv_chg_val = curr['m1_iv'] - prev['m1_iv']
     term_spread_val = curr.get('m2_iv', curr['m1_iv']) - curr['m1_iv']
-    context_label = cis_context_label(cis, rpv, drift, pre_stress, std_pct, iv_chg_val, term_spread_val)
+
+    context_label = cis_context_label(cis, rpv, effective_drift, pre_stress, std_pct, iv_chg_val, term_spread_val)
     band_label, band_color = carry_permission_band(cis)
 
     ctx = {
@@ -470,13 +441,12 @@ def run_engine_live(df):
         'decay': {'val': decay_val, 'label': decay_label, 'color': decay_color},
         'divergence': {'msg': div_msg, 'color': div_col},
         'history': df_hist,
-        'drift': drift,
+        'drift': effective_drift, # USE GATED DRIFT IN DASHBOARD
         'pre_stress': pre_stress,
         'ps_det': ps_det
     }
     return signals, ctx, curr
 
-# --- HELPER: FULL RPV HISTORY ---
 def get_full_rpv_history(df):
     rows = []
     if len(df) < 3: return pd.DataFrame()
@@ -486,7 +456,6 @@ def get_full_rpv_history(df):
         rows.append(rpv)
     return pd.DataFrame(rows)
 
-# --- DASHBOARD RENDERER ---
 def render_dashboard(df_selected, signals, ctx, curr, df_all):
     cis = ctx['cis']
     cps = ctx['cps']
@@ -649,229 +618,6 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         fig_sd.update_layout(title="<b>Price Displacement (SD)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig_sd, width="stretch")
 
-# --- GREEK MANAGER LOGIC ---
-
-def hard_kill_conditions(ctx, df_greeks):
-    # Rule: If in Expansion/Stress, forbid late-cycle short gamma (DTE <= 21)
-    if ctx['regime'] in ["EXPANSION", "STRESS"] and not df_greeks.empty:
-        short_legs = df_greeks[df_greeks['Leg'] == 'SHORT']
-        if not short_legs.empty and 'DTE' in short_legs.columns:
-            if short_legs['DTE'].min() <= 21:
-                return True, "Late-cycle short gamma in hostile regime (DTE < 21)"
-    return False, None
-
-def compute_net_greeks(df, capital):
-    scale = capital / NORMALIZATION_UNIT
-    if df.empty: return {k: 0.0 for k in ["delta", "gamma", "vega", "theta"]}
-    
-    net = {
-        "delta": df["Delta"].sum() / scale,
-        "gamma": df["Gamma"].sum() / scale,
-        "vega": df["Vega"].sum() / scale,
-        "theta": df["Theta"].sum() / scale
-    }
-    return net
-
-def run_greek_stress_engine(greeks, capital, regime):
-    scale = capital / NORMALIZATION_UNIT
-    
-    # Dynamic Vega Shock based on Regime
-    vol_mult = VOL_SHOCK.get(regime, 3)
-    
-    # 2-Sided Delta Stress
-    delta_pnl_up = greeks["delta"] * 0.015 + greeks["gamma"] * (0.015 ** 2)
-    delta_pnl_dn = -greeks["delta"] * 0.015 + greeks["gamma"] * (0.015 ** 2)
-    trend_pnl = min(delta_pnl_up, delta_pnl_dn)
-    
-    dominant_trend = "TREND_UP" if delta_pnl_up < delta_pnl_dn else "TREND_DN"
-
-    pnl = {
-        "CHOP": greeks["gamma"] * (0.005 ** 2) * 2,
-        dominant_trend: trend_pnl,
-        "VOL": greeks["vega"] * vol_mult,
-        "TIME": -greeks["theta"], # Theta decay check
-    }
-    
-    worst_val = min(pnl.values())
-    dominant = min(pnl, key=pnl.get)
-    
-    # Worst case % impact on Total Capital
-    # Greeks are per 1L. PnL is in normalized units. 
-    # To get actual PnL: worst_val * scale
-    # % Impact = (worst_val * scale) / capital = worst_val / NORMALIZATION_UNIT
-    
-    return {
-        "worst_pct": worst_val / NORMALIZATION_UNIT,
-        "dominant": dominant,
-        "pnl": pnl
-    }
-
-def apply_greek_traffic_logic(ctx, greeks, stress):
-    regime = ctx["regime"]
-    limits = GREEK_LIMITS[regime]
-    decisions = {}
-    
-    for g in ["delta", "gamma", "vega", "theta"]:
-        limit = limits.get(g)
-        val = greeks[g]
-        status = "GREEN"
-        reason = "Within limits"
-        
-        # Logic: Check Limits
-        if g == "delta" and limit is not None:
-            if abs(val) < limit:
-                status = "RED"
-                reason = f"Directional bias too low (Min |{limit}|)"
-        elif limit is not None:
-            # For Gamma/Vega (Caps): val < limit (more negative is bad)
-            # For Theta (Floor): val < limit (less income is bad)
-            if (limit < 0 and val < limit) or (limit > 0 and val < limit):
-                status = "RED"
-                reason = f"Violates regime limit ({limit})"
-        
-        # Logic: Check Dominant Stress
-        if status != "RED":
-            if DOMINANT_MAP.get(stress["dominant"]) == g:
-                status = "AMBER"
-                reason = "Dominant stress contributor"
-                
-        decisions[g] = {"status": status, "reason": reason, "limit": limit}
-        
-    return decisions
-
-# --- GREEK UI COMPONENTS ---
-
-def render_utilization_bar(val, limit, color):
-    if limit is None or limit == 0: return ""
-    pct = min(abs(val / limit) * 100, 100)
-    return f"""<div style="width:100%; background:#222; height:6px; border-radius:3px; margin-top:5px;">
-               <div style="width:{pct}%; background:{color}; height:100%; border-radius:3px;"></div></div>"""
-
-def render_greek_cards(greeks, decisions):
-    cols = st.columns(4)
-    colors = {"GREEN": "#28a745", "AMBER": "#ffc107", "RED": "#dc3545"}
-    
-    for i, g in enumerate(["delta", "gamma", "vega", "theta"]):
-        d = decisions[g]
-        c = colors[d["status"]]
-        val = greeks[g]
-        limit = d['limit']
-        
-        bar_html = render_utilization_bar(val, limit, c)
-        
-        with cols[i]:
-            st.markdown(f"""
-            <div style="background:#0d1117; border-left:4px solid {c}; padding:10px; border-radius:4px;">
-                <div style="font-size:12px; color:#888; font-weight:bold; text-transform:uppercase;">{g}</div>
-                <div style="font-size:24px; font-weight:bold; color:#fff;">{val:.0f}</div>
-                <div style="font-size:11px; color:#aaa;">Limit: {limit if limit else 'None'}</div>
-                {bar_html}
-            </div>
-            """, unsafe_allow_html=True)
-
-def render_greek_manager(ctx):
-    # 1. TOP STRIP (CONTEXT)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Regime", ctx["regime"])
-    c2.metric("Carry", ctx["cis"]["label"])
-    c3.metric("Convexity", ctx["cps"]["label"])
-    c4.metric("Pre-Stress", "YES" if ctx["pre_stress"] else "NO")
-    st.divider()
-
-    # 2. INPUTS (Processing First)
-    if "greek_table" not in st.session_state:
-        st.session_state["greek_table"] = pd.DataFrame([
-            {"Structure": "RDE", "Leg": "SHORT", "Expiry": None, "Delta": 0.0, "Gamma": 0.0, "Vega": 0.0, "Theta": 0.0},
-            {"Structure": "RDE", "Leg": "LONG", "Expiry": None, "Delta": 0.0, "Gamma": 0.0, "Vega": 0.0, "Theta": 0.0},
-        ])
-
-    # 3. CALCULATIONS
-    # We need capital to compute everything
-    with st.expander("⚙️ Inputs & Structures", expanded=False):
-        c_cap, c_marg = st.columns(2)
-        # MODIFIED DEFAULTS: 1L Capital, 30k Margin, 10k Step
-        capital = c_cap.number_input("Capital Deployed (₹)", value=100_000, step=10_000)
-        margin = c_marg.number_input("Margin Used (₹)", value=30_000, step=10_000)
-        
-        df_greeks = st.data_editor(
-            st.session_state["greek_table"],
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "Structure": st.column_config.TextColumn("Structure"),
-                "Leg": st.column_config.SelectboxColumn("Leg", options=["SHORT", "LONG"]),
-                "Expiry": st.column_config.DateColumn("Expiry"),
-            }
-        )
-        st.session_state["greek_table"] = df_greeks
-        
-        # Calculate DTE internally for logic
-        if not df_greeks.empty and "Expiry" in df_greeks.columns:
-            try:
-                df_greeks["DTE"] = (pd.to_datetime(df_greeks["Expiry"]) - pd.Timestamp.now()).dt.days
-            except: pass
-
-    # 4. HARD KILL SWITCH
-    kill, reason = hard_kill_conditions(ctx, df_greeks)
-    if kill:
-        st.error(f"🚨 HARD EXIT REQUIRED — {reason}")
-        st.stop()
-
-    # 5. MAIN LOGIC
-    greek_state = compute_net_greeks(df_greeks, capital)
-    stress = run_greek_stress_engine(greek_state, capital, ctx['regime'])
-    decisions = apply_greek_traffic_logic(ctx, greek_state, stress)
-    
-    # 6. ALERT ZONE
-    st.markdown("### ⚠️ Stress Test")
-    ac1, ac2, ac3 = st.columns([2, 2, 3])
-    ac1.metric("Worst-Case Impact", f"{stress['worst_pct']*100:.2f}%", delta_color="inverse")
-    ac2.metric("Dominant Risk", stress["dominant"])
-    
-    # SOD Comparison
-    if "sod_greeks" in st.session_state:
-        sod = compute_net_greeks(st.session_state["sod_greeks"], capital)
-        delta_change = greek_state['delta'] - sod['delta']
-        ac3.metric("Δ Delta vs Open", f"{delta_change:.0f}")
-    else:
-        if ac3.button("📌 Freeze SOD"):
-            st.session_state["sod_greeks"] = df_greeks.copy()
-            st.rerun()
-
-    st.divider()
-
-    # 7. GREEK SCORECARDS
-    render_greek_cards(greek_state, decisions)
-    
-    # 8. DECISION PANEL
-    st.write("")
-    st.markdown("### 📝 Action Plan")
-    for g, d in decisions.items():
-        if d['status'] == "GREEN": continue
-        
-        icon = "🔴" if d['status'] == "RED" else "🟡"
-        action = "Monitor closely"
-        if d['status'] == "RED":
-            if g == "gamma": action = "Reduce front-month shorts immediately."
-            elif g == "vega": action = "Cut exposure or add calendar hedges."
-            elif g == "delta": action = "Rebalance directional bias."
-            
-        st.markdown(f"""
-        <div style="margin-bottom:8px; padding:8px; background:#161b22; border-left:3px solid {'#dc3545' if d['status']=='RED' else '#ffc107'};">
-            <strong>{icon} {g.upper()}</strong>: {d['reason']} <br>
-            <span style="color:#888; font-size:13px;">👉 Action: {action}</span>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # 9. AUDIT LOGGING
-    st.session_state.setdefault("greek_audit", []).append({
-        "timestamp": datetime.now(),
-        "greeks": greek_state,
-        "stress": stress,
-        "decisions": decisions,
-        "regime": ctx["regime"]
-    })
-
 def main():
     df_all = load_data(300) 
     if len(df_all) < 5: st.error("⚠️ Not enough data found."); st.stop()
@@ -907,16 +653,13 @@ def main():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_dash, tab_greeks, tab_docs = st.tabs(["📊 DASHBOARD", "🧠 GREEK MANAGER", "📘 DOCUMENTATION"])
+    tab_dash, tab_docs = st.tabs(["📊 DASHBOARD", "📘 DOCUMENTATION"])
 
     with tab_dash:
         render_dashboard(df_sel, signals, ctx, curr, df_all)
         st.markdown("<br><hr>", unsafe_allow_html=True)
         with st.expander("📂 Raw Database"):
             st.dataframe(df_all.style.format("{:.2f}", subset=['spot_price', 'm1_straddle', 'm1_iv', 'm2_iv', 'm3_iv', 'skew_index', 'india_vix']))
-
-    with tab_greeks:
-        render_greek_manager(ctx)
 
     with tab_docs:
         render_documentation_tab()
