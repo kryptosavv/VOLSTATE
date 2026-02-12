@@ -120,7 +120,7 @@ def check_scrape_permission(driver: webdriver.Firefox) -> bool:
     try:
         driver.get(HOME_URL)
         stealth_setup(driver)
-        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         page_text = driver.find_element(By.TAG_NAME, "body").text
         
         if "Market Status" not in page_text and "NIFTY 50" not in page_text:
@@ -160,7 +160,7 @@ def get_india_vix_nse(driver: webdriver.Firefox) -> float:
     try:
         driver.get(INDICES_URL)
         stealth_setup(driver)
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "tbody")))
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "tbody")))
         
         try:
             vix_row = driver.find_element(By.XPATH, "//tr[contains(., 'INDIA VIX')]")
@@ -182,7 +182,7 @@ def get_india_vix_nse(driver: webdriver.Firefox) -> float:
         logger.info("   -> Trying Home Page Ticker...")
         driver.get(HOME_URL)
         stealth_setup(driver)
-        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         page_text = driver.find_element(By.TAG_NAME, "body").text
         match = re.search(r'INDIA\s*VIX.*?(\d{1,2}\.\d{2})', page_text, re.IGNORECASE)
         if match:
@@ -196,13 +196,8 @@ def get_india_vix_nse(driver: webdriver.Firefox) -> float:
 
 # --- TIMESTAMP EXTRACTOR ---
 def extract_page_timestamp(driver: webdriver.Firefox) -> str:
-    """
-    Parses 'As on 12-Feb-2026 15:30:00 IST' from the page.
-    Returns: '12-Feb-2026 15:30:00 IST' or 'Unknown'
-    """
     try:
         src = driver.page_source
-        # Looks for: As on DD-MMM-YYYY HH:MM:SS IST
         match = re.search(r"As on\s+([0-9]{2}-[A-Za-z]{3}-[0-9]{4}\s+[0-9]{2}:[0-9]{2}:[0-9]{2}\s+IST)", src)
         if match: 
             return match.group(1)
@@ -264,15 +259,15 @@ def switch_expiry(driver: webdriver.Firefox, dropdown, value: str) -> bool:
         driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", dropdown)
         try:
             WebDriverWait(driver, 2).until(EC.visibility_of_element_located((By.CLASS_NAME, "loader")))
-            WebDriverWait(driver, 15).until(EC.invisibility_of_element_located((By.CLASS_NAME, "loader")))
+            WebDriverWait(driver, 20).until(EC.invisibility_of_element_located((By.CLASS_NAME, "loader")))
         except: pass
-        WebDriverWait(driver, 15).until(EC.visibility_of_element_located((By.ID, "optionChainTable-indices")))
+        WebDriverWait(driver, 20).until(EC.visibility_of_element_located((By.ID, "optionChainTable-indices")))
         return True
     except: return False
 
 def scrape_table_data(driver: webdriver.Firefox) -> Optional[Dict]:
     try:
-        try: WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
+        try: WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
         except: return None
 
         # --- CAPTURE EXCHANGE TIMESTAMP ---
@@ -349,7 +344,7 @@ def scrape_table_data(driver: webdriver.Firefox) -> Optional[Dict]:
             "skew_index": round(skew_val, 2),
             "skew_put_avg_9_10_11_iv": round(put_skew, 2),
             "skew_call_avg_9_10_11_iv": round(call_skew, 2),
-            "nse_timestamp": real_timestamp # <--- USE REAL EXCHANGE TIME
+            "nse_timestamp": real_timestamp 
         }
     except: return None
 
@@ -360,6 +355,9 @@ def run_scrape_attempt(attempt_num: int) -> bool:
     options = FirefoxOptions()
     options.add_argument("--headless")
     options.add_argument("--window-size=1920,1080")
+    
+    # [OPTIMIZATION] Eager load strategy to fix Timeouts
+    options.set_capability("pageLoadStrategy", "eager")
     options.set_preference("general.useragent.override", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0")
     
     driver = None
@@ -374,8 +372,12 @@ def run_scrape_attempt(attempt_num: int) -> bool:
         driver.get(OPTION_CHAIN_URL)
         stealth_setup(driver)
         
-        try: WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
-        except: raise Exception("Main Table Timeout")
+        # [OPTIMIZATION] Increased Timeout to 90s for slow Runners
+        try: WebDriverWait(driver, 90).until(EC.presence_of_element_located((By.ID, "optionChainTable-indices")))
+        except: 
+            # Fallback check for any table content before giving up
+            try: WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "tr")))
+            except: raise Exception("Main Table Timeout")
             
         dropdown = find_expiry_dropdown(driver)
         if not dropdown: raise Exception("Expiry Dropdown Missing")
@@ -384,7 +386,6 @@ def run_scrape_attempt(attempt_num: int) -> bool:
         if not targets: raise Exception("No Expiry Targets Found")
             
         live_data = {}
-        # Used to hold the first valid timestamp found in the loop
         captured_exchange_time = None 
         
         for val, info in targets.items():
@@ -397,7 +398,6 @@ def run_scrape_attempt(attempt_num: int) -> bool:
                 row_data = scrape_table_data(driver)
                 
                 if row_data:
-                    # Capture the Exchange Timestamp if valid
                     if not captured_exchange_time and row_data.get('nse_timestamp') not in ["Unknown", "Error", None]:
                          captured_exchange_time = row_data['nse_timestamp']
 
@@ -437,12 +437,11 @@ def run_scrape_attempt(attempt_num: int) -> bool:
             elif isinstance(live_data[k], float):
                 live_data[k] = round(live_data[k], 2)
 
-        # --- TIMESTAMP LOGIC (CRITICAL FIX) ---
-        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S') # Fallback
+        # --- TIMESTAMP LOGIC ---
+        timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S') 
         
         if captured_exchange_time and "IST" in str(captured_exchange_time):
             try:
-                # Format: 12-Feb-2026 15:30:00 IST
                 clean_ts = captured_exchange_time.replace(" IST", "").strip()
                 dt_obj = datetime.strptime(clean_ts, "%d-%b-%Y %H:%M:%S")
                 timestamp_str = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
