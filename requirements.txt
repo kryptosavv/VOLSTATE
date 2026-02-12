@@ -4,3 +4,5 @@ numpy
 plotly
 selenium
 webdriver-manager
+playwright
+lxml
