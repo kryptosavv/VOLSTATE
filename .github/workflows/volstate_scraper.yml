@@ -1,11 +1,11 @@
-name: VOLSTATE Data Engine (Hourly)
+name: VOLSTATE Data Engine (Half-Hourly)
 
 on:
   schedule:
-    # Runs at minute 45 of hours 3 through 11 UTC (Mon-Fri)
-    # UTC 03:45 = IST 09:15 AM
-    # UTC 11:45 = IST 05:15 PM
-    - cron: '45 3-11 * * 1-5'
+    # 03:30 UTC = 09:00 AM IST
+    - cron: '30 3 * * 1-5'
+    # 04:00 to 15:30 UTC (Every 30 mins) = 09:30 AM to 09:00 PM IST
+    - cron: '0,30 4-15 * * 1-5'
 
   workflow_dispatch: # Allows manual run button
 
