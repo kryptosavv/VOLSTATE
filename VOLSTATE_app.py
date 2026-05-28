@@ -432,15 +432,6 @@ def check_cis_divergence(cis, cis_prev, std_pct, vrp, rpv, rpv_prev):
     if cis > 0.25 and (rpv['EXPANSION'] + rpv['STRESS']) > 0.6: return "🚨 SYSTEM CONFLICT (Data Error)", "#dc3545"
     return None, None
 
-# --- PLOT CIS/CPS TREND ---
-def plot_cis_cps_trend(df):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cis'], mode='lines+markers', name='CIS (Carry)', line=dict(color='#00d1b2', width=2)))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['cps'], mode='lines+markers', name='CPS (Convexity)', line=dict(color='#e67e22', width=2, dash='dot')))
-    fig.add_hline(y=0, line_dash='dash', line_color='#666')
-    fig.update_layout(title="<b>CIS vs CPS — Permission Regimes</b>", template="plotly_dark", height=280, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[-1, 1], title="Permission"), legend=dict(orientation="h", y=1.1))
-    return fig
-
 def run_engine_live(df):
     df_c = df.sort_values('timestamp', ascending=True).copy()
     if len(df_c) < 5: return None, None, df_c.iloc[-1]
@@ -640,106 +631,6 @@ def render_dashboard(df_selected, signals, ctx, curr, df_all):
         <span>M1 DTE: {ctx['m1_dte']}</span>
         <span>M2 DTE: {ctx['m2_dte']}</span>
     </div>""", unsafe_allow_html=True)
-
-    st.markdown('<div class="section-header">🔍 Regime Dynamics & Stability</div>', unsafe_allow_html=True)
-    
-    ps_status = "<span class='ps-status-danger'>⚠️ TRIGGERED</span>" if pre_stress else "<span class='ps-status-safe'>✅ SAFE</span>"
-    ps_msg = "WARNING: TAIL RISK > 60% OF EXPANSION" if pre_stress else "System Stable. No immediate crash precursors."
-    
-    def fmt_drift(val):
-        sym = "↑" if val > 0 else "↓" if val < 0 else "−"
-        c = "#28a745" if val > 0.05 else "#dc3545" if val < -0.05 else "#888"
-        if val > 0.1: c = "#00e676"
-        return f"<span style='color:{c}; font-weight:bold;'>{sym} {abs(val):.2f}</span>"
-
-    st.markdown(textwrap.dedent(f"""
-    <div class="dynamics-console">
-        <div class="ps-panel">
-            <div class="dynamics-title">PRE-STRESS DETECTOR</div>
-            <div class="ps-status">{ps_status}</div>
-            <div class="ps-metrics">
-                <div>Slope: {ctx['ps_det']['stress_slope']:.2f}</div>
-                <div>Accel: {ctx['ps_det']['stress_accel']}</div>
-                <div style="margin-top:4px; font-style:italic;">{ps_msg}</div>
-            </div>
-        </div>
-        <div class="drift-grid">
-            <div class="drift-item"><div class="drift-label">COMP DRIFT</div><div class="drift-val">{fmt_drift(drift['COMPRESSION'])}</div></div>
-            <div class="drift-item"><div class="drift-label">TRAN DRIFT</div><div class="drift-val">{fmt_drift(drift['TRANSITION'])}</div></div>
-            <div class="drift-item"><div class="drift-label">EXPA DRIFT</div><div class="drift-val">{fmt_drift(drift['EXPANSION'])}</div></div>
-            <div class="drift-item"><div class="drift-label">STRS DRIFT</div><div class="drift-val">{fmt_drift(drift['STRESS'])}</div></div>
-        </div>
-    </div>
-    """), unsafe_allow_html=True)
-
-    st.markdown('<div class="section-header">📊 Analytics</div>', unsafe_allow_html=True)
-    df_chart = df_selected.sort_values('timestamp').tail(60)
-
-    fig_spot = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['spot_price'], line=dict(color='#3498db', width=2), name="Spot"), secondary_y=False)
-    fig_spot.add_trace(go.Scatter(x=df_chart['timestamp'], y=df_chart['m1_straddle'], line=dict(color='#e74c3c', width=2, dash='dot'), name="Straddle"), secondary_y=True)
-    fig_spot.update_layout(title="<b>Nifty Spot vs ATM Straddle Price Trend</b>", template="plotly_dark", height=350, margin=dict(t=20, b=20, l=20, r=20), legend=dict(orientation="h", y=1.1))
-    st.plotly_chart(fig_spot, width="stretch")
-
-    if not ctx['history'].empty:
-        fig_trend = plot_cis_cps_trend(ctx['history'])
-        st.plotly_chart(fig_trend, width="stretch")
-
-    rpv_full_hist = get_full_rpv_history(df_selected.tail(60))
-    if not rpv_full_hist.empty:
-        fig_rpv = go.Figure()
-        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['STRESS'], mode='lines', stackgroup='one', name='STRESS', line=dict(color='#dc3545', width=0)))
-        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['EXPANSION'], mode='lines', stackgroup='one', name='EXPANSION', line=dict(color='#fd7e14', width=0)))
-        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['TRANSITION'], mode='lines', stackgroup='one', name='TRANSITION', line=dict(color='#ffc107', width=0)))
-        fig_rpv.add_trace(go.Scatter(x=rpv_full_hist['timestamp'], y=rpv_full_hist['COMPRESSION'], mode='lines', stackgroup='one', name='COMPRESSION', line=dict(color='#28a745', width=0)))
-        fig_rpv.update_layout(title="<b>Regime Probabilities Over Time (2 Months)</b>", template="plotly_dark", height=300, margin=dict(t=40, b=10, l=10, r=10), yaxis=dict(range=[0, 1]), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-        st.plotly_chart(fig_rpv, width="stretch")
-
-    df_hist = df_chart.copy()
-    df_hist['slope'] = df_hist['m2_iv'] - df_hist['m1_iv']
-    df_hist['slope_col'] = np.where(df_hist['slope'] >= 0, '#00cc00', '#ff0000')
-    df_hist['std_pct'] = df_hist['m1_straddle'].pct_change() * 100
-    df_hist['std_col'] = np.where(df_hist['std_pct'] <= 0, '#00cc00', '#ff0000') 
-    df_hist['log_ret'] = np.log(df_hist['spot_price'] / df_hist['spot_price'].shift(1))
-    df_hist['rv_5d'] = df_hist['log_ret'].rolling(window=5).std() * np.sqrt(252) * 100
-    df_hist['vrp'] = df_hist['m1_iv'] - df_hist['rv_5d']
-    df_hist['vrp_col'] = np.where(df_hist['vrp'] > 0, '#00cc00', '#ff0000') 
-
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_slope = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['slope'], marker_color=df_hist['slope_col']))
-        fig_slope.update_layout(title="<b>Near Term Structure (M2-M1)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_slope, width="stretch")
-    with c2:
-        fig_std = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['std_pct'], marker_color=df_hist['std_col']))
-        fig_std.update_layout(title="<b>Daily Straddle Change %</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_std, width="stretch")
-
-    c3, c4 = st.columns(2)
-    with c3:
-        fig_vrp = go.Figure(go.Bar(x=df_hist['timestamp'], y=df_hist['vrp'], marker_color=df_hist['vrp_col']))
-        fig_vrp.update_layout(title="<b>VRP Index (Edge)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_vrp, width="stretch")
-    with c4:
-        fig_skew = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['skew_index'], mode='lines', line=dict(color='#3498db', width=2), fill='tozeroy'))
-        fig_skew.update_layout(title="<b>Skew Index</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_skew, width="stretch")
-
-    c5, c6 = st.columns(2)
-    with c5:
-        fig_vvix = go.Figure(go.Scatter(x=df_hist['timestamp'], y=df_hist['india_vix'], mode='lines', line=dict(color='#f1c40f', width=2)))
-        fig_vvix.update_layout(title="<b>INDIA VIX</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_vvix, width="stretch")
-    with c6:
-        fig_sd = go.Figure()
-        daily_iv = (df_hist['m1_iv'] / 100) / np.sqrt(252)
-        spot_pct = df_hist['spot_price'].pct_change()
-        df_hist['sd_move'] = (spot_pct / daily_iv.shift(1)).abs().fillna(0)
-        
-        fig_sd.add_trace(go.Scatter(x=df_hist['timestamp'], y=df_hist['sd_move'], fill='tozeroy', mode='lines', line=dict(color='#9b59b6')))
-        fig_sd.add_hline(y=1.0, line_dash="dash", line_color="red")
-        fig_sd.update_layout(title="<b>Price Displacement (SD)</b>", template="plotly_dark", height=250, margin=dict(t=40, b=10, l=10, r=10), showlegend=False)
-        st.plotly_chart(fig_sd, width="stretch")
 
 def main():
     df_all = load_data(300) 
